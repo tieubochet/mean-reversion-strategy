@@ -8,9 +8,9 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "xyz:CL",           # ← Sửa ở đây
+        "symbol_a": "CL",           # ← Sửa ở đây
         "name_b": "Brent (B)",
-        "symbol_b": "xyz:BRENTOIL",     # ← Sửa ở đây
+        "symbol_b": "BRENTOIL",     # ← Sửa ở đây
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
