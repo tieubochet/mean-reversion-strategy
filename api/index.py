@@ -1,178 +1,216 @@
 import os
 import requests
-import telebot
-from fastapi import FastAPI, Request, BackgroundTasks
+from flask import Flask, request
 
-app = FastAPI()
+app = Flask(__name__)
 
-# ==================== 1. CẤU HÌNH CHIẾN LƯỢC ====================
-VON_PER_LEG = 14000         # $14,000/leg
-GIA_WTI_TRUNG_BINH = 70.0   # Giá dầu cơ sở
-BARRELS = VON_PER_LEG / GIA_WTI_TRUNG_BINH # ~200 barrels
+# ==================== CONFIG ====================
+CONFIG_PAIRS = {
+    "WTI_BRENT": {
+        "name_a": "WTI (A)",
+        "symbol_a": "XYZ:CL",         
+        "name_b": "Brent (B)",
+        "symbol_b": "XYZ:BRENTOIL",      
+        "mean": -3.69,
+        "std": 2.52,
+        "use_zscore": True,
+        "long_z_threshold": -1.0,
+        "short_z_threshold": 0.8,
+        "exit_z_threshold": 0.2,
+        "vol_per_leg": 700,
+        "avg_hold_hours": 69,
+        "fee_bps": 0.00022,
+        "min_net_pnl": 30,
+        "max_funding_loss": 40,
+    }
+}
 
-THRESHOLD_SHORT_SPREAD = -2.90  
-THRESHOLD_LONG_SPREAD = -4.10   
-MEAN_SPREAD = -3.50             
-MAX_ACCEPTABLE_FUNDING_PAY = 0.015 / 100 
+# CẤU HÌNH THÔNG TIN TELEGRAM BẮN ALERT CHỦ ĐỘNG
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# Bạn nhớ cài đặt biến môi trường TELEGRAM_CHAT_ID trên server (Vercel/Render/VPS)
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") 
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") 
+# ==================== HÀM HỖ TRỢ ====================
+def calculate_z_score(spread, mean, std):
+    if std == 0:
+        return 0
+    return (spread - mean) / std
 
-# Bật lại threaded=True nhưng xử lý qua luồng background để không làm nghẽn FastAPI
-bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=True) if TELEGRAM_TOKEN else None
-HL_API_URL = "https://api.hyperliquid.xyz/info"
-
-# ==================== 2. LẤY DATA TỪ DEX XYZ ====================
-def get_hl_market_data():
+def get_hyperliquid_data():
+    url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
+    prices = {}
+    funding_dict = {}
+
     try:
-        mids_resp = requests.post(HL_API_URL, headers=headers, json={"type": "allMids", "dex": "xyz"}, timeout=8).json()
-        meta_resp = requests.post(HL_API_URL, headers=headers, json={"type": "metaAndAssetCtxs", "dex": "xyz"}, timeout=8).json()
-        
-        if isinstance(mids_resp, dict) and isinstance(meta_resp, list) and len(meta_resp) >= 2:
-            wti_price = float(mids_resp.get("CL", 0))
-            brent_price = float(mids_resp.get("BRENTOIL", 0))
-            
-            if wti_price == 0 or brent_price == 0:
-                return None
-                
-            wti_funding = 0.0
-            brent_funding = 0.0
-            
+        mids_resp = requests.post(url, headers=headers, json={"type": "allMids", "dex": "xyz"}, timeout=10).json()
+        if isinstance(mids_resp, dict):
+            prices = {k.upper(): float(v) for k, v in mids_resp.items() if v}
+    except Exception as e:
+        print(f"Lỗi lấy dữ liệu allMids từ DEX xyz: {e}")
+
+    try:
+        meta_resp = requests.post(url, headers=headers, json={"type": "metaAndAssetCtxs", "dex": "xyz"}, timeout=10).json()
+        if isinstance(meta_resp, list) and len(meta_resp) >= 2:
             universe = meta_resp[0].get("universe", [])
             asset_ctxs = meta_resp[1]
             for i, asset in enumerate(universe):
-                name = asset.get("name", "").upper()
-                if i < len(asset_ctxs):
-                    if name == "CL":
-                        wti_funding = float(asset_ctxs[i].get("funding", 0))
-                    elif name == "BRENTOIL":
-                        brent_funding = float(asset_ctxs[i].get("funding", 0))
-                        
-            return {
-                "wti": {"price": wti_price, "funding": wti_funding},
-                "brent": {"price": brent_price, "funding": brent_funding}
-            }
+                coin_name = asset.get("name", "")
+                if i < len(asset_ctxs) and coin_name:
+                    funding = float(asset_ctxs[i].get("funding", 0))
+                    funding_dict[coin_name.upper()] = funding
+                    if not coin_name.upper().startswith("XYZ:"):
+                        funding_dict[f"XYZ:{coin_name.upper()}"] = funding
     except Exception as e:
-        print(f"Lỗi kết nối hoặc xử lý data HL: {e}")
-    return None
+        print(f"Lỗi lấy funding rate từ DEX xyz: {e}")
 
-# ==================== 3. LOGIC TÍNH TOÁN TIN NHẮN ====================
-def build_signal_report(is_manual_check=False):
-    data = get_hl_market_data()
-    if not data:
-        return "❌ Lỗi: Không thể kết nối hoặc phân tích dữ liệu phân vùng DEX `xyz` từ Hyperliquid.", False
+    return prices, funding_dict
 
-    wti_p = data["wti"]["price"]
-    wti_f = data["wti"]["funding"]
-    brent_p = data["brent"]["price"]
-    brent_f = data["brent"]["funding"]
-    
-    current_spread = wti_p - brent_p
-    signal = None
-    action_wti, action_brent = "", ""
-    net_funding_hourly = 0.0
+def calc_net_funding(funding_a, funding_b, is_long_a, vol):
+    net_rate = (funding_b - funding_a) if is_long_a else (funding_a - funding_b)
+    return net_rate * 24 * vol, net_rate * 24 * 365 * 100
 
-    if current_spread >= THRESHOLD_SHORT_SPREAD:
-        signal = "SHORT SPREAD (Co hẹp)"
-        action_wti, action_brent = "SHORT 🔴", "LONG 🟢"
-        net_funding_hourly = (-wti_f) + brent_f
-    elif current_spread <= THRESHOLD_LONG_SPREAD:
-        signal = "LONG SPREAD (Dãn rộng)"
-        action_wti, action_brent = "LONG 🟢", "SHORT 🔴"
-        net_funding_hourly = wti_f - brent_f
+def send_telegram_message(token, chat_id, text):
+    if not token or not chat_id:
+        print(f"[warning] Thiếu Token hoặc Chat ID. Nội dung: {text}")
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+    except Exception as e:
+        print(f"Lỗi gửi Telegram: {e}")
 
-    funding_status_text = "N/A"
-    is_funding_ok = False
-    
-    if signal:
-        if net_funding_hourly >= 0:
-            is_funding_ok = True
-            funding_status_text = f"🟢 CÓ LỢI (Nhận +{net_funding_hourly*100:.4f}%/h)"
-        else:
-            cost = abs(net_funding_hourly)
-            if cost <= MAX_ACCEPTABLE_FUNDING_PAY:
-                is_funding_ok = True
-                funding_status_text = f"🟡 CHẤP NHẬN ĐƯỢC (Trả -{cost*100:.4f}%/h)"
-            else:
-                funding_status_text = f"❌ BẤT LỢI QUÁ MỨC (Trả -{cost*100:.4f}%/h) -> Bỏ qua"
+def build_check_message(prices, funding_rates):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+    lines = [f"📊 *Snapshot thị trường - Hyperliquid (DEX: xyz)*\n🕐 `{now}`\n"]
 
-    title = "🔍 *KIỂM TRA TÍN HIỆU CHỦ ĐỘNG*" if is_manual_check else "🚨 *CẢNH BÁO TÍN HIỆU MEAN REVERSION*"
-    
-    if signal:
-        aspread_target = abs(current_spread - MEAN_SPREAD)
-        estimated_pnl = aspread_target * BARRELS
+    for pair_key, cfg in CONFIG_PAIRS.items():
+        sym_a = cfg["symbol_a"].upper()
+        sym_b = cfg["symbol_b"].upper()
+
+        price_a = float(prices.get(sym_a, 0))
+        price_b = float(prices.get(sym_b, 0))
+
+        if price_a == 0 and sym_a.startswith("XYZ:"): price_a = float(prices.get(sym_a.split(":")[1], 0))
+        if price_b == 0 and sym_b.startswith("XYZ:"): price_b = float(prices.get(sym_b.split(":")[1], 0))
+
+        if price_a == 0 or price_b == 0:
+            lines.append(f"❌ *{cfg['name_a']} vs {cfg['name_b']}*: Không lấy được giá từ DEX xyz\n")
+            continue
+
+        spread = price_a - price_b
+        z_score = calculate_z_score(spread, cfg["mean"], cfg["std"])
+
+        if z_score <= cfg["long_z_threshold"]: status = "🟢 ĐẠT NGƯỠNG LONG"
+        elif z_score >= cfg["short_z_threshold"]: status = "🔴 ĐẠT NGƯỠNG SHORT"
+        else: status = "⏳ Trong vùng trung tính"
+
+        fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
+        fb = funding_rates.get(sym_b, funding_rates.get(sym_b.replace("XYZ:", ""), 0))
+        f_long, apr_long = calc_net_funding(fa, fb, True, cfg["vol_per_leg"])
+        f_short, apr_short = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
+
+        def fmt_f(usd, apr):
+            return f"{'✅' if usd >= 0 else '🔴'} `{usd:+.2f}/ngày` (APR `{apr:+.1f}%`)"
+
+        block = (
+            f"─────────────────────\n"
+            f"🛢 *{cfg['name_a']} vs {cfg['name_b']}*\n"
+            f"  Giá WTI (`{sym_a}`): `${price_a:.4f}`\n"
+            f"  Giá Brent (`{sym_b}`): `${price_b:.4f}`\n"
+            f"  Spread: `${spread:+.2f}`\n"
+            f"  **Z-Score: `{z_score:+.2f}`**\n"
+            f"  Mean: `{cfg['mean']}` | Std: `{cfg['std']}`\n\n"
+            f"  📍 *Trạng thái:* {status}\n"
+            f"  💸 *Funding* (vốn `${cfg['vol_per_leg']:,}/leg`):\n"
+            f"  Long A + Short B: {fmt_f(f_long, apr_long)}\n"
+            f"  Short A + Long B: {fmt_f(f_short, apr_short)}\n"
+        )
+        lines.append(block)
+
+    lines.append("─────────────────────\n💡 Dùng `/check` để cập nhật lại")
+    return "\n".join(lines)
+
+# ==================== API ENDPOINTS ====================
+
+@app.route("/api", methods=["POST", "GET"])  # Cho phép cả GET/POST tùy thuộc vào dịch vụ cron bên ngoài gọi kiểu gì
+def scan_bot():
+    """
+    ENDPOINT DÀNH CHO CRON-JOB NGOÀI KÍCH HOẠT MỖI 5 PHÚT
+    """
+    try:
+        prices, funding_rates = get_hyperliquid_data()
         
-        msg = (
-            f"{title}\n"
-            f"─────────────────────\n"
-            f"💡 **Chiến lược:** {signal}\n"
-            f"📊 **Spread hiện tại:** `${current_spread:.2f}`\n"
-            f"🎯 **Target về Mean:** `${MEAN_SPREAD:.2f}` (Lợi nhuận: `+{aspread_target:.2f}$/bbl`)\n\n"
-            f"📋 **Hành động (Vốn ${VON_PER_LEG:,}/leg ~ {BARRELS:.0f} bbls):**\n"
-            f"  • WTI (xyz:CL): {action_wti} | Giá: `${wti_p:.2f}`\n"
-            f"  • Brent (xyz:BRENTOIL): {action_brent} | Giá: `${brent_p:.2f}`\n\n"
-            f"💸 **Trạng thái Funding dòng:**\n"
-            f"  • {funding_status_text}\n"
-            f"💰 **Ước tính Gross PnL vòng này:** `+{estimated_pnl:.2f}$`"
-        )
-        return msg, is_funding_ok
-    else:
-        msg = (
-            f"{title}\n"
-            f"─────────────────────\n"
-            f"📊 **Spread hiện tại:** `${current_spread:.2f}`\n"
-            f"  • Giá WTI: `${wti_p:.2f}` | Funding: `{wti_f*100:+.4f}%/h`\n"
-            f"  • Giá Brent: `${brent_p:.2f}` | Funding: `{brent_f*100:+.4f}%/h`\n"
-            f"🎯 **Biên kích hoạt:** Long $\le$ `{THRESHOLD_LONG_SPREAD}` | Short $\ge$ `{THRESHOLD_SHORT_SPREAD}`\n"
-            f"⏳ **Trạng thái:** Trong vùng trung tính - Chưa kích hoạt lệnh."
-        )
-        return msg, False
+        for pair_key, cfg in CONFIG_PAIRS.items():
+            sym_a = cfg["symbol_a"].upper()
+            sym_b = cfg["symbol_b"].upper()
+            price_a = float(prices.get(sym_a, 0))
+            price_b = float(prices.get(sym_b, 0))
 
-# ==================== 4. ENDPOINTS ====================
+            if price_a == 0 and sym_a.startswith("XYZ:"): price_a = float(prices.get(sym_a.split(":")[1], 0))
+            if price_b == 0 and sym_b.startswith("XYZ:"): price_b = float(prices.get(sym_b.split(":")[1], 0))
 
-@app.get("/api")
-@app.post("/api")
-def cron_scan():
-    """Dành cho Cron-job ngoài quét ngầm (Chỉ bắn tin khi thỏa mãn cả 2 điều kiện)"""
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        return {"status": "error", "message": "Missing environment variables"}
-    
-    msg, should_trigger = build_signal_report(is_manual_check=False)
-    if should_trigger:
+            if price_a == 0 or price_b == 0:
+                continue
+
+            spread = price_a - price_b
+            z_score = calculate_z_score(spread, cfg["mean"], cfg["std"])
+
+            triggered = False
+            direction = ""
+            net_usd_day, net_apr = 0, 0
+
+            fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
+            fb = funding_rates.get(sym_b, funding_rates.get(sym_b.replace("XYZ:", ""), 0))
+
+            # Kiểm tra xem có kích hoạt ngưỡng Alert không
+            if z_score <= cfg["long_z_threshold"]:
+                triggered = True
+                direction = f"🟢 *VÀO LỆNH LONG SPREAD*:\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
+                net_usd_day, net_apr = calc_net_funding(fa, fb, True, cfg["vol_per_leg"])
+            elif z_score >= cfg["short_z_threshold"]:
+                triggered = True
+                direction = f"🔴 *VÀO LỆNH SHORT SPREAD*:\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
+                net_usd_day, net_apr = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
+
+            if triggered:
+                alert_msg = (
+                    f"🚨 *CẢNH BÁO TÍN HIỆU MEAN REVERSION!*\n\n"
+                    f"🥇 *{cfg['name_a']} vs {cfg['name_b']}*\n"
+                    f"Spread hiện tại: `${spread:+.2f}`\n"
+                    f"**Z-Score hiện tại: `{z_score:+.2f}`**\n\n"
+                    f"{direction}\n\n"
+                    f"💸 *Ước tính Funding thu về*:\n"
+                    f"  • Thu nhập: `{net_usd_day:+.2f}$/ngày`\n"
+                    f"  • Tỷ suất net APR: `{net_apr:+.1f}%`"
+                )
+                send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, alert_msg)
+                
+        return {"status": "success", "message": "Scan completed"}, 200
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    update = request.get_json(silent=True)
+    if not update: return "OK", 200
+    msg = update.get("message") or update.get("edited_message")
+    if not msg: return "OK", 200
+
+    chat_id = str(msg["chat"]["id"])
+    text = msg.get("text", "").strip().lower()
+
+    if text.startswith("/check"):
         try:
-            bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-            return {"status": "success", "triggered": True}
+            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, "⏳ Đang kết nối phân vùng DEX xyz trên HyperCore...")
+            prices, funding = get_hyperliquid_data()
+            reply = build_check_message(prices, funding)
+            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, reply)
         except Exception as e:
-            return {"status": "error", "message": str(e)}
-    return {"status": "success", "triggered": False}
+            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, f"❌ Lỗi: {str(e)}")
 
-if bot:
-    @bot.message_handler(commands=['check'])
-    def telegram_check(message):
-        """Xử lý lệnh /check"""
-        chat_id = str(message.chat.id)
-        try:
-            msg, _ = build_signal_report(is_manual_check=True)
-            bot.send_message(chat_id, msg, parse_mode="Markdown")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Lỗi: {str(e)}")
+    return "OK", 200
 
-# Hàm xử lý gói update chạy ngầm, giải phóng block luồng cho FastAPI
-def process_telegram_updates(json_data: dict):
-    if bot:
-        update = telebot.types.Update.de_json(json_data)
-        bot.process_new_updates([update])
-
-@app.post("/webhook")
-async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Cổng nhận dữ liệu từ Webhook Telegram - Sử dụng BackgroundTasks để chống nghẽn"""
-    if bot:
-        json_data = await request.json()
-        # Đẩy việc xử lý tin nhắn vào hàng đợi chạy ngầm và trả về phản hồi 'OK' ngay lập tức cho Telegram
-        background_tasks.add_task(process_telegram_updates, json_data)
-    return "OK"
-
-@app.get("/")
-def index():
-    return {"status": "online"}
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
