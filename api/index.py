@@ -5,14 +5,14 @@ from flask import Flask, request
 app = Flask(__name__)
 
 # ==================== CONFIG ====================
-# Đổi symbol_a và symbol_b thành tên hiển thị chuẩn (Ví dụ: CL, BRENTOIL)
-# Bot sẽ tự động map tên này sang mã hệ thống dạng @107, @156 real-time.
+# Điền chính xác Tên hiển thị (Ticker) bạn thấy trên giao diện sàn.
+# Ví dụ trên sàn ghi là WTIOIL-USDC thì bạn chỉ điền "WTIOIL".
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "WTIOIL",           # ← Điền tên hiển thị phái sinh của WTI
+        "symbol_a": "WTIOIL",         # ← Ticker hiển thị chuẩn của WTI trên sàn
         "name_b": "Brent (B)",
-        "symbol_b": "BRENTOIL",     # ← Điền tên hiển thị phái sinh của Brent
+        "symbol_b": "BRENTOIL",      # ← Ticker hiển thị chuẩn của Brent trên sàn
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
@@ -33,48 +33,15 @@ def calculate_z_score(spread, mean, std):
         return 0
     return (spread - mean) / std
 
-def get_token_mapping():
-    """
-    Gọi API metaAndAssetCtxs để map tên hiển thị (CL, BRENTOIL) 
-    sang mã token thực tế trên sàn (@107, @156, hoặc giữ nguyên tên)
-    """
-    url = "https://api.hyperliquid.xyz/info"
-    payload = {"type": "metaAndAssetCtxs"}
-    mapping = {}
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list) and len(data) > 0:
-                universe = data[0].get("universe", [])
-                for asset in universe:
-                    name = asset.get("name", "")
-                    if name:
-                        mapping[name.upper()] = name
-        return mapping
-    except Exception as e:
-        print(f"Lỗi khi lấy token mapping: {e}")
-        return {}
-
 def get_hyperliquid_data():
     url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
 
     prices = {}
     funding_dict = {}
+    ticker_to_id_map = {} # Dùng để map từ "WTIOIL" -> "@107"
 
-    # === Lấy dữ liệu giá bằng allMids ===
-    try:
-        mids_resp = requests.post(
-            url, headers=headers, json={"type": "allMids"}, timeout=10
-        ).json()
-
-        if isinstance(mids_resp, dict):
-            prices = {k: float(v) for k, v in mids_resp.items() if v}
-    except Exception as e:
-        print(f"Lỗi allMids: {e}")
-
-    # === Lấy funding từ metaAndAssetCtxs ===
+    # 1. Lấy dữ liệu meta để xây dựng Bản đồ Ticker Mapping chuẩn xác
     try:
         meta_resp = requests.post(
             url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10
@@ -85,29 +52,40 @@ def get_hyperliquid_data():
             asset_ctxs = meta_resp[1]
 
             for i, asset in enumerate(universe):
-                coin_name = asset.get("name", "")
-                if i < len(asset_ctxs):
-                    funding = float(asset_ctxs[i].get("funding", 0))
-                    funding_dict[coin_name] = funding
+                # Tên nội bộ (Dạng "@107" hoặc "BTC" tùy loại tài sản)
+                internal_name = asset.get("name", "")
+                
+                # Tên hiển thị (Dạng "WTIOIL-USDC" hoặc "BTC-PERP")
+                # Một số API cũ hoặc môi trường HIP-3 trả về tên thô hoặc cấu trúc mở rộng, 
+                # ta chuẩn hóa loại bỏ hậu tố "-USDC" hoặc "-PERP" để lấy Ticker gốc
+                display_name = internal_name.split("-")[0].replace("@", "").upper()
+                
+                if internal_name:
+                    # Map cả 2 dạng để đảm bảo tìm kiểu gì cũng trúng
+                    ticker_to_id_map[internal_name.upper()] = internal_name
+                    # Map từ "WTIOIL" -> "@107"
+                    clean_ticker = internal_name.replace("@", "").split("-")[0].upper()
+                    ticker_to_id_map[clean_ticker] = internal_name
+
+                    # Lưu dữ liệu funding rate tương ứng cho mã internal_name
+                    if i < len(asset_ctxs):
+                        funding_dict[internal_name] = float(asset_ctxs[i].get("funding", 0))
+
     except Exception as e:
-        print(f"Lỗi metaAndAssetCtxs: {e}")
+        print(f"Lỗi phân tích metaAndAssetCtxs: {e}")
 
-    # === DEBUG: In tất cả coin có giá từ 60-80 ===
-    print("=== COIN CÓ GIÁ 60-80 ===")
-    oil_coins = []
-    for name, price in prices.items():
-        try:
-            p = float(price)
-            if 60 <= p <= 80:
-                print(f"  {name}: {p}")
-                oil_coins.append(name)
-        except:
-            pass
+    # 2. Lấy dữ liệu giá thực tế từ allMids
+    try:
+        mids_resp = requests.post(
+            url, headers=headers, json={"type": "allMids"}, timeout=10
+        ).json()
 
-    if not oil_coins:
-        print("⚠️ Không tìm thấy coin nào giá 60-80")
+        if isinstance(mids_resp, dict):
+            prices = {k: float(v) for k, v in mids_resp.items() if v}
+    except Exception as e:
+        print(f"Lỗi lấy dữ liệu allMids: {e}")
 
-    return prices, funding_dict
+    return prices, funding_dict, ticker_to_id_map
 
 def calc_net_funding(funding_a, funding_b, is_long_a, vol):
     net_rate = (funding_b - funding_a) if is_long_a else (funding_a - funding_b)
@@ -162,38 +140,7 @@ def evaluate_signal(config, current_spread, is_long_a, net_usd_day, price_a):
         "should_exit": should_exit,
     }
 
-def build_message(config, current_spread, signal_direction, net_usd_day, net_apr_pct, ev):
-    name_a = config["name_a"]
-    name_b = config["name_b"]
-    vol = config["vol_per_leg"]
-
-    funding_icon = "✅" if net_usd_day >= 0 else "🟡"
-    funding_note = "có lợi" if net_usd_day >= 0 else "bất lợi nhưng chấp nhận được"
-    sign_f = "+" if net_usd_day >= 0 else ""
-    sign_n = "+" if ev["net_pnl"] >= 0 else ""
-    exit_note = "\n⚠️ *Nên cân nhắc thoát lệnh*" if ev.get("should_exit") else ""
-
-    return (
-        f"🚨 *Signal Adaptive mới!*\n\n"
-        f"🥇 *{name_a} vs {name_b}*\n"
-        f"Spread: `${current_spread:+.2f}` | Z-Score: `{ev['z_score']:+.2f}`\n"
-        f"➔ {signal_direction}\n\n"
-        f"{funding_icon} Funding: `{sign_f}${net_usd_day:.2f}/ngày` ({funding_note})\n"
-        f"   net APR: `{net_apr_pct:+.1f}%` · Vốn: `${vol:,}/leg`\n\n"
-        f"📐 *Ước tính 1 trade*:\n"
-        f"  • Gross: `${ev['gross_spread_pnl']:+.2f}`\n"
-        f"  • Funding: `${ev['funding_net_total']:+.2f}`\n"
-        f"  • Phí: `-${ev['fee_total']:.2f}`\n"
-        f"  • *Net PnL: `{sign_n}${ev['net_pnl']:.2f}`*\n\n"
-        f"📊 {ev['recommendation']}{exit_note}\n\n"
-        f"Mean: `{config['mean']}` | Std: `{config['std']}`"
-    )
-
-def send_telegram_message(token, chat_id, text):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
-
-def build_check_message(prices, funding_rates):
+def build_check_message(prices, funding_rates, ticker_map):
     from datetime import datetime, timezone
     
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
@@ -205,25 +152,24 @@ def build_check_message(prices, funding_rates):
         name_a = cfg["name_a"]
         name_b = cfg["name_b"]
 
-        sym_a = None
-        sym_b = None
-
-        # Quét chính xác key trong allMids chứa ticker cấu hình
-        for k in prices.keys():
-            if sym_a_cfg in k.upper():
-                sym_a = k
-            if sym_b_cfg in k.upper():
-                sym_b = k
-
-        # Nếu không tìm thấy bằng chứa chuỗi, fallback về cấu hình mặc định
-        if not sym_a: sym_a = cfg["symbol_a"]
-        if not sym_b: sym_b = cfg["symbol_b"]
+        # Tra cứu mã ID thực tế (ví dụ: tìm "WTIOIL" -> trả về "@107")
+        sym_a = ticker_map.get(sym_a_cfg, cfg["symbol_a"])
+        sym_b = ticker_map.get(sym_b_cfg, cfg["symbol_b"])
 
         price_a = float(prices.get(sym_a, 0))
         price_b = float(prices.get(sym_b, 0))
 
+        # Khử lỗi trường hợp sàn đổi format đặt tên
         if price_a == 0 or price_b == 0:
-            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá (Mã tìm kiếm: {sym_a} / {sym_b})\n")
+            # Quét quét chuỗi thông minh (Fallback)
+            for k in prices.keys():
+                if sym_a_cfg in k.upper(): sym_a = k
+                if sym_b_cfg in k.upper(): sym_b = k
+            price_a = float(prices.get(sym_a, 0))
+            price_b = float(prices.get(sym_b, 0))
+
+        if price_a == 0 or price_b == 0:
+            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá\n(Mã tìm kiếm: Ticker `{sym_a_cfg}` -> ID trên sàn `{sym_a}`)\n")
             continue
 
         spread = price_a - price_b
@@ -238,7 +184,6 @@ def build_check_message(prices, funding_rates):
         short_t = cfg.get("short_threshold", -2.8)
         vol = cfg["vol_per_leg"]
 
-        # Xác định trạng thái
         if use_zscore:
             if z_score <= long_z:
                 status = "🟢 ĐẠT NGƯỠNG LONG"
@@ -258,7 +203,7 @@ def build_check_message(prices, funding_rates):
             dist_to_long = f"{spread - long_t:+.2f}"
             dist_to_short = f"{short_t - spread:+.2f}"
 
-        # Funding 2 chiều
+        # Lấy funding rate theo đúng mã ID hệ thống
         fa = funding_rates.get(sym_a, 0)
         fb = funding_rates.get(sym_b, 0)
         f_long, apr_long = calc_net_funding(fa, fb, True, vol)
@@ -272,8 +217,8 @@ def build_check_message(prices, funding_rates):
         block = (
             f"─────────────────────\n"
             f"🛢 *{name_a} vs {name_b}*\n"
-            f"  Giá {sym_a_cfg} ({sym_a}): `${price_a:.4f}`\n"
-            f"  Giá {sym_b_cfg} ({sym_b}): `${price_b:.4f}`\n"
+            f"  Giá {sym_a_cfg} (`{sym_a}`): `${price_a:.4f}`\n"
+            f"  Giá {sym_b_cfg} (`{sym_b}`): `${price_b:.4f}`\n"
             f"  Spread: `${spread:+.2f}`\n"
             f"  **Z-Score: `{z_score:+.2f}`**\n"
             f"  Mean: `{mean}` | Std: `{std}`\n\n"
@@ -289,10 +234,13 @@ def build_check_message(prices, funding_rates):
     lines.append("─────────────────────\n💡 Dùng `/check` để cập nhật lại")
     return "\n".join(lines)
 
+def send_telegram_message(token, chat_id, text):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+
 # ==================== API ====================
 @app.route("/api", methods=["POST"])
 def scan_bot():
-    # Giữ nguyên logic scan_bot cũ của bạn tại đây để gửi alert tự động
     pass
 
 @app.route("/webhook", methods=["POST"])
@@ -311,18 +259,17 @@ def telegram_webhook():
 
     if text.startswith("/check"):
         try:
-            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, "⏳ Đang lấy dữ liệu thị trường...")
-            prices, funding = get_hyperliquid_data()
-            reply = build_check_message(prices, funding)
+            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, "⏳ Đang kết nối API sàn và đồng bộ mã ID...")
+            prices, funding, ticker_map = get_hyperliquid_data()
+            reply = build_check_message(prices, funding, ticker_map)
             send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, reply)
         except Exception as e:
-            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, f"❌ Lỗi xử lý lệnh: {str(e)}")
+            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, f"❌ Lỗi: {str(e)}")
 
     elif text.startswith("/help"):
         send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, "🤖 Bot Spread Trading\n/check - Snapshot + Z-Score")
 
     return "OK", 200
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
