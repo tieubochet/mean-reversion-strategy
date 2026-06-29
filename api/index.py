@@ -18,26 +18,45 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False) if TELEGRAM_TOKEN else Non
 HL_API_URL = "https://api.hyperliquid.xyz/info"
 
 def get_hl_market_data():
-    payload = {"type": "metaAndAssetCtxs"}
+    # Sử dụng endpoint UI thường ít bị Cloudflare siết IP hơn endpoint gốc
+    url = "https://api-ui.hyperliquid.xyz/info"
+    headers = {"Content-Type": "application/json"}
+    
     try:
-        response = requests.post(HL_API_URL, json=payload, timeout=8)
-        if response.status_code == 200:
-            data = response.json()
-            universe = data[0]['universe']
-            asset_ctxs = data[1]
+        # 1. Lấy giá midPrice của tất cả các cặp (bản tin này rất nhẹ)
+        price_payload = {"type": "allMids"}
+        price_res = requests.post(url, json=price_payload, timeout=5)
+        
+        # 2. Lấy danh sách funding hiện tại
+        funding_payload = {"type": "metaAndAssetCtxs"}
+        funding_res = requests.post(url, json=funding_payload, timeout=5)
+        
+        if price_res.status_code == 200 and funding_res.status_code == 200:
+            prices = price_res.json()
+            funding_data = funding_res.json()
             
-            result = {}
+            wti_name = "xyz:CL"
+            brent_name = "xyz:BRENTOIL"
+            
+            if wti_name not in prices or brent_name not in prices:
+                return None
+                
+            result = {
+                wti_name: {"price": float(prices[wti_name]), "funding": 0.0},
+                brent_name: {"price": float(prices[brent_name]), "funding": 0.0}
+            }
+            
+            # Trích xuất funding từ cấu trúc meta
+            universe = funding_data[0]['universe']
+            asset_ctxs = funding_data[1]
             for index, asset in enumerate(universe):
                 name = asset['name']
-                if name in ["xyz:CL", "xyz:BRENTOIL"]:
-                    ctx = asset_ctxs[index]
-                    result[name] = {
-                        "price": float(ctx['midPx']),
-                        "funding": float(ctx['funding']) 
-                    }
+                if name in [wti_name, brent_name]:
+                    result[name]["funding"] = float(asset_ctxs[index]['funding'])
+                    
             return result
     except Exception as e:
-        print(f"Lỗi API HL: {e}")
+        print(f"Lỗi kết nối Hyperliquid: {e}")
     return None
 
 def build_signal_message(is_manual_check=False):
