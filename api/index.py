@@ -11,23 +11,22 @@ CONFIG_PAIRS = {
         "symbol_a": "XYZ:CL",         
         "name_b": "Brent (B)",
         "symbol_b": "XYZ:BRENTOIL",      
-        "mean": -3.69,
-        "std": 2.52,
+        "mean": -3.50,               # Cập nhật theo Mean m15
+        "std": 0.65,                 # Cập nhật theo Std m15
         "use_zscore": True,
-        "long_z_threshold": -1.0,
-        "short_z_threshold": 0.8,
-        "exit_z_threshold": 0.2,
-        "vol_per_leg": 700,
-        "avg_hold_hours": 69,
-        "fee_bps": 0.00022,
+        "long_z_threshold": -1.38,   # Tương đương Spread = -$4.40 (P10)
+        "short_z_threshold": 1.23,   # Tương đương Spread = -$2.70 (P90)
+        "exit_z_threshold": 0.08,    # Tương đương Spread = -$3.45 (P50 - Trung vị)
+        "vol_per_leg": 14000,        # Quy mô vốn $14,000/leg theo cấu hình backtest m15
+        "avg_hold_hours": 16.5,      # Thời gian giữ lệnh trung bình m15
+        "fee_bps": 0.00022,          # Maker fee 2.2 bps của trade.xyz
         "min_net_pnl": 30,
-        "max_funding_loss": 40,
+        "max_funding_loss": 40,      # Ngưỡng lỗ Funding tối đa chấp nhận được ($40/ngày)
     }
 }
 
 # CẤU HÌNH THÔNG TIN TELEGRAM BẮN ALERT CHỦ ĐỘNG
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-# Bạn nhớ cài đặt biến môi trường TELEGRAM_CHAT_ID trên server (Vercel/Render/VPS)
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") 
 
 # ==================== HÀM HỖ TRỢ ====================
@@ -134,10 +133,11 @@ def build_check_message(prices, funding_rates):
 
 # ==================== API ENDPOINTS ====================
 
-@app.route("/api", methods=["POST", "GET"])  # Cho phép cả GET/POST tùy thuộc vào dịch vụ cron bên ngoài gọi kiểu gì
+@app.route("/api", methods=["POST", "GET"])
+@app.route("/api/", methods=["POST", "GET"]) # Chống lỗi 404 khi cronjob tự động thêm dấu / ở cuối
 def scan_bot():
     """
-    ENDPOINT DÀNH CHO CRON-JOB NGOÀI KÍCH HOẠT MỖI 5 PHÚT
+    ENDPOINT DÀNH CHO CRON-JOB NGOÀI KÍCH HOẠT MỖI 5 PHÚT HOẶC 15 PHÚT
     """
     try:
         prices, funding_rates = get_hyperliquid_data()
@@ -160,29 +160,47 @@ def scan_bot():
             triggered = False
             direction = ""
             net_usd_day, net_apr = 0, 0
+            funding_pass = False
 
             fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
             fb = funding_rates.get(sym_b, funding_rates.get(sym_b.replace("XYZ:", ""), 0))
 
-            # Kiểm tra xem có kích hoạt ngưỡng Alert không
+            # KIỂM TRA ĐIỀU KIỆN 1: Đạt ngưỡng Spread Long (Z-Score <= long_z_threshold)
             if z_score <= cfg["long_z_threshold"]:
-                triggered = True
-                direction = f"🟢 *VÀO LỆNH LONG SPREAD*:\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
                 net_usd_day, net_apr = calc_net_funding(fa, fb, True, cfg["vol_per_leg"])
-            elif z_score >= cfg["short_z_threshold"]:
-                triggered = True
-                direction = f"🔴 *VÀO LỆNH SHORT SPREAD*:\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
-                net_usd_day, net_apr = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
+                
+                # KIỂM TRA ĐIỀU KIỆN 2: Funding mang lại lợi nhuận HOẶC lỗ trong mức chấp nhận được
+                if net_usd_day >= 0 or abs(net_usd_day) <= cfg["max_funding_loss"]:
+                    triggered = True
+                    funding_pass = True
+                    direction = f"🟢 *VÀO LỆNH LONG SPREAD (Khung m15)*:\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
+                else:
+                    print(f"[Bỏ qua] Spread đạt ngưỡng LONG nhưng Funding quá bất lợi: Trả {net_usd_day:.2f}$/ngày")
 
-            if triggered:
+            # KIỂM TRA ĐIỀU KIỆN 1: Đạt ngưỡng Spread Short (Z-Score >= short_z_threshold)
+            elif z_score >= cfg["short_z_threshold"]:
+                net_usd_day, net_apr = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
+                
+                # KIỂM TRA ĐIỀU KIỆN 2: Funding mang lại lợi nhuận HOẶC lỗ trong mức chấp nhận được
+                if net_usd_day >= 0 or abs(net_usd_day) <= cfg["max_funding_loss"]:
+                    triggered = True
+                    funding_pass = True
+                    direction = f"🔴 *VÀO LỆNH SHORT SPREAD (Khung m15)*:\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
+                else:
+                    print(f"[Bỏ qua] Spread đạt ngưỡng SHORT nhưng Funding quá bất lợi: Trả {net_usd_day:.2f}$/ngày")
+
+            # GỬI TIN NHẮN ALERT NẾU THOẢ MÃN ĐỒNG THỜI CẢ 2 ĐIỀU KIỆN
+            if triggered and funding_pass:
+                funding_status_str = f"✅ Nhận: `{net_usd_day:+.2f}$/ngày`" if net_usd_day >= 0 else f"⚠️ Trả: `{net_usd_day:+.2f}$/ngày` (Trong ngưỡng cho phép)"
+                
                 alert_msg = (
-                    f"🚨 *CẢNH BÁO TÍN HIỆU MEAN REVERSION!*\n\n"
+                    f"🚨 *TÍN HIỆU MEAN REVERSION KHUNG m15!*\n\n"
                     f"🥇 *{cfg['name_a']} vs {cfg['name_b']}*\n"
                     f"Spread hiện tại: `${spread:+.2f}`\n"
-                    f"**Z-Score hiện tại: `{z_score:+.2f}`**\n\n"
+                    f"**Z-Score hiện tại: `{z_score:+.2f}`** *(Ngưỡng: {cfg['long_z_threshold']} / {cfg['short_z_threshold']})*\n\n"
                     f"{direction}\n\n"
-                    f"💸 *Ước tính Funding thu về*:\n"
-                    f"  • Thu nhập: `{net_usd_day:+.2f}$/ngày`\n"
+                    f"💸 *Trạng thái Funding ước tính (Vốn ${cfg['vol_per_leg']:,}/leg)*:\n"
+                    f"  • {funding_status_str}\n"
                     f"  • Tỷ suất net APR: `{net_apr:+.1f}%`"
                 )
                 send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, alert_msg)
@@ -191,7 +209,7 @@ def scan_bot():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
-@app.route("/api/webhook", methods=["POST"])
+@app.route("/api/webhook", methods=["POST"]) # Cập nhật /api/webhook để chạy chuẩn xác trên Vercel
 def telegram_webhook():
     update = request.get_json(silent=True)
     if not update: return "OK", 200
