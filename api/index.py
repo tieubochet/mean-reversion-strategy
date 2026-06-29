@@ -39,18 +39,9 @@ def get_hyperliquid_data():
     prices = {}
     funding_dict = {}
 
-    # 1. Lấy tất cả giá từ allMids
+    # === 1. LẤY GIÁ CÁC CẶP PERP (BAO GỒM CẢ HIP-3) ===
     try:
-        mids_resp = requests.post(
-            url, headers=headers, json={"type": "allMids"}, timeout=10
-        ).json()
-        if isinstance(mids_resp, dict):
-            prices = {k: float(v) for k, v in mids_resp.items() if v}
-    except Exception as e:
-        print(f"Lỗi lấy dữ liệu allMids: {e}")
-
-    # 2. Lấy funding từ metaAndAssetCtxs (quét động theo vị trí hoặc tên tương ứng)
-    try:
+        # Sử dụng metaAndAssetCtxs để lấy đồng thời trạng thái giá mid của toàn bộ vũ trụ (universe)
         meta_resp = requests.post(
             url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10
         ).json()
@@ -59,14 +50,40 @@ def get_hyperliquid_data():
             universe = meta_resp[0].get("universe", [])
             asset_ctxs = meta_resp[1]
 
+            # Quét qua danh sách universe để bóc tách thông tin tên hiển thị động
             for i, asset in enumerate(universe):
-                coin_name = asset.get("name", "")
-                if i < len(asset_ctxs) and coin_name:
-                    funding = float(asset_ctxs[i].get("funding", 0))
-                    # Lưu funding rate theo cả chữ thường lẫn chữ hoa để dễ tra cứu
-                    funding_dict[coin_name.upper()] = funding
+                # Tên hệ thống (Có thể là '@107' hoặc 'WTIOIL-USDC' tùy thuộc vào phiên bản cập nhật HIP-3)
+                internal_name = asset.get("name", "")
+                
+                # Trích xuất dữ liệu context tài sản tại index tương ứng
+                if i < len(asset_ctxs) and internal_name:
+                    ctx = asset_ctxs[i]
+                    
+                    # Lấy giá mid-price chính xác đang active từ context tài sản
+                    mid_price = float(ctx.get("midPrice", 0))
+                    funding_rate = float(ctx.get("funding", 0))
+                    
+                    if mid_price > 0:
+                        prices[internal_name.upper()] = mid_price
+                        # Thử map thêm trường hợp loại bỏ các ký tự đặc biệt để bot đối chiếu chuỗi dễ hơn
+                        clean_name = internal_name.replace("@", "").upper()
+                        prices[clean_name] = mid_price
+                        
+                    funding_dict[internal_name.upper()] = funding_rate
+                    funding_dict[clean_name] = funding_rate
+
     except Exception as e:
-        print(f"Lỗi lấy funding rate: {e}")
+        print(f"Lỗi khi xử lý cấu trúc dữ liệu Perp/HIP-3: {e}")
+
+    # === 2. BỔ SUNG QUÉT ĐỒNG THỜI HOÀN TOÀN TỪ ALLMIDS (FALLBACK) ===
+    try:
+        mids_resp = requests.post(url, headers=headers, json={"type": "allMids"}, timeout=10).json()
+        if isinstance(mids_resp, dict):
+            for k, v in mids_resp.items():
+                if v:
+                    prices[k.upper()] = float(v)
+    except Exception as e:
+        print(f"Lỗi fallback allMids: {e}")
 
     return prices, funding_dict
 
@@ -129,19 +146,23 @@ def build_check_message(prices, funding_rates):
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     lines = [f"📊 *Snapshot thị trường - Hyperliquid*\n🕐 `{now}`\n"]
 
-    # === PHẦN ĐOÁN MÃ VÀ TRẢ KẾT QUẢ ĐOẠN ĐOÁN (DIAGNOSTIC) ===
-    lines.append("🔍 *Hệ thống tự động quét các mã liên quan:*")
+    # === HỆ THỐNG TRA CỨU CHUỖI TOÀN DIỆN ===
+    lines.append("🔍 *Danh sách các mã tìm thấy trên sàn:*")
     found_any = False
+    
+    # Duyệt tìm bất kỳ key nào chứa ký tự dầu khí hoặc có mức giá thực tế từ 65 đến 75
     for k, v in prices.items():
-        # Tìm tất cả các key có chứa chữ OIL, WTI hoặc BRENT trên sàn
-        if any(word in k.upper() for word in ["WTI", "BRENT", "OIL"]):
-            lines.append(f"  • Key: `{k}` ➔ Giá: `${float(v):.4f}`")
+        price_val = float(v)
+        if any(w in k for w in ["WTI", "BRENT", "OIL"]) or (65 <= price_val <= 75):
+            lines.append(f"  • Key: `{k}` ➔ Giá thực tế: `${price_val:.4f}`")
             found_any = True
-    
+            
     if not found_any:
-        lines.append("  ⚠️ Không tìm thấy key nào chứa WTI/BRENT/OIL trong allMids")
-    
+        lines.append("  ⚠️ Không tìm thấy kết quả phù hợp nào.")
+        
     lines.append("\n─────────────────────")
+    
+    # ... (Giữ nguyên logic tính toán cặp spread CONFIG_PAIRS phía dưới của bạn)
 
     # === PHẦN TÍNH SPREAD NHƯ CŨ ===
     for pair_key, cfg in CONFIG_PAIRS.items():
