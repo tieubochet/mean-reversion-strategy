@@ -1,21 +1,20 @@
 import os
 import requests
 import telebot
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI
 
 app = FastAPI()
 
-# --- CẤU HÌNH CƠ SỞ (Lấy từ Environment Variables trên Vercel để bảo mật) ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+# --- ĐÃ CẬP NHẬT THEO TÊN BIẾN MÔI TRƯỜNG MỚI CỦA BẠN ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Ngưỡng kích hoạt cho khung ngắn (đã tối ưu theo nến 15m)
 THRESHOLD_SHORT_SPREAD = -2.90
 THRESHOLD_LONG_SPREAD = -4.10
 MEAN_SPREAD = -3.50
 MAX_ACCEPTABLE_FUNDING_PAY = 0.015 / 100 
 
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 HL_API_URL = "https://api.hyperliquid.xyz/info"
 
 def get_hl_market_data():
@@ -41,9 +40,11 @@ def get_hl_market_data():
         print(f"Lỗi API HL: {e}")
     return None
 
-# Endpoint này sẽ được Cron-job gọi đến mỗi 5 phút
-@app.get("/cron/check-spread")
-def check_market_cron():
+# Hàm xử lý logic chính cho Cron
+def process_cron_logic():
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        return {"status": "error", "message": "Missing environment variables: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID"}
+        
     data = get_hl_market_data()
     if not data or "xyz:CL" not in data or "xyz:BRENTOIL" not in data:
         return {"status": "error", "message": "Failed to fetch data from Hyperliquid"}
@@ -58,7 +59,6 @@ def check_market_cron():
     action_wti, action_brent = "", ""
     net_funding_hourly = 0.0
 
-    # Kiểm tra điều kiện Spread
     if current_spread >= THRESHOLD_SHORT_SPREAD:
         signal = "SHORT SPREAD (Co hẹp)"
         action_wti, action_brent = "SHORT 🔴", "LONG 🟢"
@@ -68,7 +68,6 @@ def check_market_cron():
         action_wti, action_brent = "LONG 🟢", "SHORT 🔴"
         net_funding_hourly = wti_funding - brent_funding
 
-    # Kiểm tra điều kiện Funding
     if signal:
         is_funding_ok = False
         funding_status_text = ""
@@ -96,7 +95,7 @@ def check_market_cron():
                 f"💸 **Funding:** {funding_status_text}"
             )
             try:
-                bot.send_message(TELEGRAM_CHAT_ID, message, parse_mode="Markdown")
+                bot.send_message(CHAT_ID, message, parse_mode="Markdown")
                 return {"status": "success", "signal_triggered": True, "spread": current_spread}
             except Exception as e:
                 return {"status": "error", "message": f"Telegram failed: {str(e)}"}
@@ -104,6 +103,16 @@ def check_market_cron():
             return {"status": "ignored", "reason": "Funding unfavourable", "spread": current_spread}
             
     return {"status": "checked", "signal_triggered": False, "spread": current_spread}
+
+
+# 🔥 ĐỂ TRÁNH LỖI 405: ĐỊNH NGHĨA CẢ HAI PHƯƠNG THỨC GET VÀ POST CHO ENDPOINT CRON
+@app.get("/cron/check-spread")
+def check_market_cron_get():
+    return process_cron_logic()
+
+@app.post("/cron/check-spread")
+def check_market_cron_post():
+    return process_cron_logic()
 
 @app.get("/")
 def index():
