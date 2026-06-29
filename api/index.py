@@ -55,11 +55,15 @@ def get_hyperliquid_data():
                 prices[coin_name] = float(mark_price) if mark_price else 0
                 funding_dict[coin_name] = float(ctx.get("funding", 0))
 
-    # Debug: In ra danh sách coin để bạn biết tên chính xác
-    print("=== DANH SÁCH COIN CÓ TRÊN HYPERLIQUID ===")
-    for name in list(prices.keys()):
-        if any(x in name.upper() for x in ["CL", "BRENT", "OIL", "XYZ", "WTI"]):
-            print(f"  → {name}: {prices[name]}")
+        # Debug: In coin có giá khoảng dầu thô
+    print("=== TẤT CẢ COIN CÓ GIÁ KHOẢNG 60-80 ===")
+    for name, price in prices.items():
+        try:
+            p = float(price)
+            if 60 <= p <= 80:
+                print(f"  {name}: {p}")
+        except:
+            pass
 
     return prices, funding_dict
 
