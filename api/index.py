@@ -37,7 +37,7 @@ def get_hyperliquid_data():
 
     # Lấy meta + asset context (cách ổn định nhất hiện nay)
     resp = requests.post(
-        url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=15
+        url, headers=headers, json={"type": "perpDexs"}, timeout=15
     ).json()
 
     prices = {}
