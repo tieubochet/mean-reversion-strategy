@@ -1,37 +1,32 @@
 import os
 import requests
 import telebot
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 
 app = FastAPI()
 
-# ==================== 1. ĐÚNG CẤU HÌNH CHIẾN LƯỢC CỦA BẠN ====================
+# ==================== 1. CẤU HÌNH CHIẾN LƯỢC ====================
 VON_PER_LEG = 14000         # $14,000/leg
-GIA_WTI_TRUNG_BINH = 70.0   # Giá dầu cơ sở để tính toán size
+GIA_WTI_TRUNG_BINH = 70.0   # Giá dầu cơ sở
 BARRELS = VON_PER_LEG / GIA_WTI_TRUNG_BINH # ~200 barrels
 
-# Ngưỡng kích hoạt hệ thống theo phân phối nến 15m
-THRESHOLD_SHORT_SPREAD = -2.90  # Spread >= -2.90 -> Short WTI + Long Brent
-THRESHOLD_LONG_SPREAD = -4.10   # Spread <= -4.10 -> Long WTI + Short Brent
-MEAN_SPREAD = -3.50             # Trục TP về giá trị trung bình
-
-# Bộ lọc Funding Rate (Giới hạn trả max 0.015% / giờ)
+THRESHOLD_SHORT_SPREAD = -2.90  
+THRESHOLD_LONG_SPREAD = -4.10   
+MEAN_SPREAD = -3.50             
 MAX_ACCEPTABLE_FUNDING_PAY = 0.015 / 100 
 
-# Biến môi trường trên Vercel
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") 
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False) if TELEGRAM_TOKEN else None
+# Bật lại threaded=True nhưng xử lý qua luồng background để không làm nghẽn FastAPI
+bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=True) if TELEGRAM_TOKEN else None
 HL_API_URL = "https://api.hyperliquid.xyz/info"
 
-# ==================== 2. CHỈ THAM KHẢO CÁCH LẤY DATA (THÊM DEX: XYZ) ====================
+# ==================== 2. LẤY DATA TỪ DEX XYZ ====================
 def get_hl_market_data():
     headers = {"Content-Type": "application/json"}
     try:
-        # Lấy giá chính xác nhờ có tham số "dex": "xyz"
         mids_resp = requests.post(HL_API_URL, headers=headers, json={"type": "allMids", "dex": "xyz"}, timeout=8).json()
-        # Lấy funding rate chính xác nhờ có tham số "dex": "xyz"
         meta_resp = requests.post(HL_API_URL, headers=headers, json={"type": "metaAndAssetCtxs", "dex": "xyz"}, timeout=8).json()
         
         if isinstance(mids_resp, dict) and isinstance(meta_resp, list) and len(meta_resp) >= 2:
@@ -62,7 +57,7 @@ def get_hl_market_data():
         print(f"Lỗi kết nối hoặc xử lý data HL: {e}")
     return None
 
-# ==================== 3. ĐÚNG LOGIC TÍNH TOÁN TIN NHẮN CỦA BẠN ====================
+# ==================== 3. LOGIC TÍNH TOÁN TIN NHẮN ====================
 def build_signal_report(is_manual_check=False):
     data = get_hl_market_data()
     if not data:
@@ -73,14 +68,11 @@ def build_signal_report(is_manual_check=False):
     brent_p = data["brent"]["price"]
     brent_f = data["brent"]["funding"]
     
-    # Tính toán Spread thực tế
     current_spread = wti_p - brent_p
-    
     signal = None
     action_wti, action_brent = "", ""
     net_funding_hourly = 0.0
 
-    # Điều kiện 1: Khớp theo đúng ngưỡng biên tĩnh nến 15m của bạn
     if current_spread >= THRESHOLD_SHORT_SPREAD:
         signal = "SHORT SPREAD (Co hẹp)"
         action_wti, action_brent = "SHORT 🔴", "LONG 🟢"
@@ -90,7 +82,6 @@ def build_signal_report(is_manual_check=False):
         action_wti, action_brent = "LONG 🟢", "SHORT 🔴"
         net_funding_hourly = wti_f - brent_f
 
-    # Điều kiện 2: Bộ lọc Funding Rate dòng
     funding_status_text = "N/A"
     is_funding_ok = False
     
@@ -106,11 +97,9 @@ def build_signal_report(is_manual_check=False):
             else:
                 funding_status_text = f"❌ BẤT LỢI QUÁ MỨC (Trả -{cost*100:.4f}%/h) -> Bỏ qua"
 
-    # Xây dựng cấu trúc tin nhắn theo đúng thông số Barrels / PnL của bạn
     title = "🔍 *KIỂM TRA TÍN HIỆU CHỦ ĐỘNG*" if is_manual_check else "🚨 *CẢNH BÁO TÍN HIỆU MEAN REVERSION*"
     
     if signal:
-        # Tính toán PnL ước tính dựa trên công thức bạn đưa ra: Aspread * barrels
         aspread_target = abs(current_spread - MEAN_SPREAD)
         estimated_pnl = aspread_target * BARRELS
         
@@ -119,8 +108,8 @@ def build_signal_report(is_manual_check=False):
             f"─────────────────────\n"
             f"💡 **Chiến lược:** {signal}\n"
             f"📊 **Spread hiện tại:** `${current_spread:.2f}`\n"
-            f"🎯 **Target về Mean:** `${MEAN_SPREAD:.2f}` (Lợi nhuận mục tiêu: `+{aspread_target:.2f}$/barrel`)\n\n"
-            f"📋 **Hành động vị thế (Vốn ${VON_PER_LEG:,}/leg ~ {BARRELS:.0f} bbls):**\n"
+            f"🎯 **Target về Mean:** `${MEAN_SPREAD:.2f}` (Lợi nhuận: `+{aspread_target:.2f}$/bbl`)\n\n"
+            f"📋 **Hành động (Vốn ${VON_PER_LEG:,}/leg ~ {BARRELS:.0f} bbls):**\n"
             f"  • WTI (xyz:CL): {action_wti} | Giá: `${wti_p:.2f}`\n"
             f"  • Brent (xyz:BRENTOIL): {action_brent} | Giá: `${brent_p:.2f}`\n\n"
             f"💸 **Trạng thái Funding dòng:**\n"
@@ -140,12 +129,12 @@ def build_signal_report(is_manual_check=False):
         )
         return msg, False
 
-# ==================== 4. CÁC ENDPOINT ĐIỀU HƯỚNG CHUẨN ====================
+# ==================== 4. ENDPOINTS ====================
 
 @app.get("/api")
 @app.post("/api")
 def cron_scan():
-    """Dành cho Cron-job ngoài kích hoạt mỗi 5 phút (Chỉ bắn tin khi thỏa mãn cả 2 điều kiện)"""
+    """Dành cho Cron-job ngoài quét ngầm (Chỉ bắn tin khi thỏa mãn cả 2 điều kiện)"""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return {"status": "error", "message": "Missing environment variables"}
     
@@ -156,24 +145,32 @@ def cron_scan():
             return {"status": "success", "triggered": True}
         except Exception as e:
             return {"status": "error", "message": str(e)}
-    return {"status": "success", "triggered": False, "reason": "No signal or funding filter blocked"}
+    return {"status": "success", "triggered": False}
 
 if bot:
     @bot.message_handler(commands=['check'])
     def telegram_check(message):
-        """Dành cho lệnh /check chủ động (Bắn báo cáo Snapshot tức thì)"""
+        """Xử lý lệnh /check"""
         chat_id = str(message.chat.id)
-        bot.send_message(chat_id, "⏳ Đang kết nối phân vùng DEX xyz trên HyperCore...")
-        msg, _ = build_signal_report(is_manual_check=True)
-        bot.send_message(chat_id, msg, parse_mode="Markdown")
+        try:
+            msg, _ = build_signal_report(is_manual_check=True)
+            bot.send_message(chat_id, msg, parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Lỗi: {str(e)}")
 
-@app.post("/webhook")
-async def receive_webhook(request: Request):
-    """Cổng nhận dữ liệu từ Webhook Telegram"""
+# Hàm xử lý gói update chạy ngầm, giải phóng block luồng cho FastAPI
+def process_telegram_updates(json_data: dict):
     if bot:
-        json_data = await request.json()
         update = telebot.types.Update.de_json(json_data)
         bot.process_new_updates([update])
+
+@app.post("/webhook")
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Cổng nhận dữ liệu từ Webhook Telegram - Sử dụng BackgroundTasks để chống nghẽn"""
+    if bot:
+        json_data = await request.json()
+        # Đẩy việc xử lý tin nhắn vào hàng đợi chạy ngầm và trả về phản hồi 'OK' ngay lập tức cho Telegram
+        background_tasks.add_task(process_telegram_updates, json_data)
     return "OK"
 
 @app.get("/")
