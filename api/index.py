@@ -9,9 +9,9 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "xyz:WTIOIL",         # ← Tên chính xác trên sàn phụ xyz
+        "symbol_a": "XYZ:CL",         # ← Tên chính xác trên sàn phụ xyz
         "name_b": "Brent (B)",
-        "symbol_b": "xyz:BRENTOIL",      # ← Tên chính xác trên sàn phụ xyz
+        "symbol_b": "XYZ:BRENTOIL",      # ← Tên chính xác trên sàn phụ xyz
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
