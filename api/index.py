@@ -10,7 +10,7 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "CL",           # ← Điền tên hiển thị phái sinh của WTI
+        "symbol_a": "WTIOIL",           # ← Điền tên hiển thị phái sinh của WTI
         "name_b": "Brent (B)",
         "symbol_b": "BRENTOIL",     # ← Điền tên hiển thị phái sinh của Brent
         "mean": -3.69,
@@ -199,36 +199,31 @@ def build_check_message(prices, funding_rates):
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     lines = [f"📊 *Snapshot thị trường - Hyperliquid*\n🕐 `{now}`\n"]
 
-    # --- TỰ ĐỘNG PHÁT HIỆN MÃ DẦU KHÍ THEO VÙNG GIÁ (60 - 80) ---
-    # Quét tất cả các token dạng @ đang có giá giao dịch trong tầm của dầu hỏa
-    oil_candidates = [k for k, v in prices.items() if k.startswith("@") and (60 <= float(v) <= 80)]
-    oil_candidates.sort() # Sắp xếp để cố định thứ tự mã thấp làm WTI, mã cao làm Brent
-
     for pair_key, cfg in CONFIG_PAIRS.items():
         sym_a_cfg = cfg["symbol_a"].upper()
         sym_b_cfg = cfg["symbol_b"].upper()
         name_a = cfg["name_a"]
         name_b = cfg["name_b"]
 
-        # Mặc định lấy từ cấu hình
-        sym_a = cfg["symbol_a"]
-        sym_b = cfg["symbol_b"]
+        sym_a = None
+        sym_b = None
 
-        # Nếu phát hiện đủ ít nhất 2 token dầu khí tiềm năng từ sàn, tự động map vào thay cho tên tĩnh
-        if len(oil_candidates) >= 2:
-            sym_a = oil_candidates[0] # Mã có ID nhỏ hơn hoặc xuất hiện trước
-            sym_b = oil_candidates[1] # Mã có ID lớn hơn hoặc xuất hiện sau
-        elif sym_a not in prices or sym_b not in prices:
-            # Dự phòng: Quét tìm ngẫu nhiên nếu cấu hình sai
-            for k in prices.keys():
-                if k.startswith("@") and sym_a_cfg in k: sym_a = k
-                if k.startswith("@") and sym_b_cfg in k: sym_b = k
+        # Quét chính xác key trong allMids chứa ticker cấu hình
+        for k in prices.keys():
+            if sym_a_cfg in k.upper():
+                sym_a = k
+            if sym_b_cfg in k.upper():
+                sym_b = k
+
+        # Nếu không tìm thấy bằng chứa chuỗi, fallback về cấu hình mặc định
+        if not sym_a: sym_a = cfg["symbol_a"]
+        if not sym_b: sym_b = cfg["symbol_b"]
 
         price_a = float(prices.get(sym_a, 0))
         price_b = float(prices.get(sym_b, 0))
 
         if price_a == 0 or price_b == 0:
-            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá (Mã tìm kiếm thực tế: {sym_a} / {sym_b})\n")
+            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá (Mã tìm kiếm: {sym_a} / {sym_b})\n")
             continue
 
         spread = price_a - price_b
@@ -243,7 +238,7 @@ def build_check_message(prices, funding_rates):
         short_t = cfg.get("short_threshold", -2.8)
         vol = cfg["vol_per_leg"]
 
-        # Xác định trạng thái lệnh
+        # Xác định trạng thái
         if use_zscore:
             if z_score <= long_z:
                 status = "🟢 ĐẠT NGƯỠNG LONG"
@@ -263,7 +258,7 @@ def build_check_message(prices, funding_rates):
             dist_to_long = f"{spread - long_t:+.2f}"
             dist_to_short = f"{short_t - spread:+.2f}"
 
-        # Tính Funding
+        # Funding 2 chiều
         fa = funding_rates.get(sym_a, 0)
         fb = funding_rates.get(sym_b, 0)
         f_long, apr_long = calc_net_funding(fa, fb, True, vol)
