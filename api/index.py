@@ -199,9 +199,6 @@ def build_check_message(prices, funding_rates):
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     lines = [f"📊 *Snapshot thị trường - Hyperliquid*\n🕐 `{now}`\n"]
 
-    print("=== TẤT CẢ COIN CÓ GIÁ KHOẢNG 60-80 ===")
-    prices.items()
-
     for pair_key, cfg in CONFIG_PAIRS.items():
         sym_a_cfg = cfg["symbol_a"].upper()
         sym_b_cfg = cfg["symbol_b"].upper()
