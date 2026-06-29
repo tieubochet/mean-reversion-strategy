@@ -43,7 +43,7 @@ def get_hyperliquid_data():
     try:
         # Sử dụng metaAndAssetCtxs để lấy đồng thời trạng thái giá mid của toàn bộ vũ trụ (universe)
         meta_resp = requests.post(
-            url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10
+            url, headers=headers, json={"type": "metaAndAssetCtxs"}  # TODO: iterate all dexes for HIP-3, timeout=10
         ).json()
 
         if isinstance(meta_resp, list) and len(meta_resp) >= 2:
@@ -60,7 +60,7 @@ def get_hyperliquid_data():
                     ctx = asset_ctxs[i]
                     
                     # Lấy giá mid-price chính xác đang active từ context tài sản
-                    mid_price = float(ctx.get("midPrice", 0))
+                    mid_price = float(ctx.get("midPx") or ctx.get("midPrice") or 0)
                     funding_rate = float(ctx.get("funding", 0))
                     
                     if mid_price > 0:
@@ -272,3 +272,8 @@ def telegram_webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
+# NOTE:
+# This version only fixes midPx parsing. To fully support HIP-3 WTI/BRENTOIL,
+# replace get_hyperliquid_data() with logic that enumerates all dexes and calls
+# metaAndAssetCtxs/allMids for each dex, merging results by coin name.
