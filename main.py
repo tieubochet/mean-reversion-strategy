@@ -6,8 +6,8 @@ from fastapi import FastAPI, Response, status
 app = FastAPI()
 
 # --- CẤU HÌNH CƠ SỞ (Lấy từ Environment Variables trên Vercel để bảo mật) ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
 # Ngưỡng kích hoạt cho khung ngắn (đã tối ưu theo nến 15m)
 THRESHOLD_SHORT_SPREAD = -2.90
@@ -15,7 +15,7 @@ THRESHOLD_LONG_SPREAD = -4.10
 MEAN_SPREAD = -3.50
 MAX_ACCEPTABLE_FUNDING_PAY = 0.015 / 100 
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 HL_API_URL = "https://api.hyperliquid.xyz/info"
 
 def get_hl_market_data():
@@ -96,7 +96,7 @@ def check_market_cron():
                 f"💸 **Funding:** {funding_status_text}"
             )
             try:
-                bot.send_message(CHAT_ID, message, parse_mode="Markdown")
+                bot.send_message(TELEGRAM_CHAT_ID, message, parse_mode="Markdown")
                 return {"status": "success", "signal_triggered": True, "spread": current_spread}
             except Exception as e:
                 return {"status": "error", "message": f"Telegram failed: {str(e)}"}
