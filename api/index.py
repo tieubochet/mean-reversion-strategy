@@ -191,7 +191,7 @@ def scan_bot():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/api/webhook", methods=["POST"])
 def telegram_webhook():
     update = request.get_json(silent=True)
     if not update: return "OK", 200
