@@ -1,70 +1,26 @@
-from http.server import BaseHTTPRequestHandler
-import json
-import os
-import requests
-
-# --- CẤU HÌNH THAM SỐ TĨNH (Giữ nguyên từ kết quả Backtest) ---
-CONFIG_PAIRS = {
-    "WTI_BRENT": {
-        "name_a": "WTI (A)",
-        "symbol_a": "CL",
-        "name_b": "Brent (B)",
-        "symbol_b": "BRENTOIL",
-        "mean": -3.69,
-        "std": 2.52,
-        "long_threshold": 0,
-        "short_threshold": -0.78,
-        "vol_per_leg": 50000
-    }
-}
-
-def get_hyperliquid_data():
-    url = "https://api.hyperliquid.xyz/info"
-    headers = {"Content-Type": "application/json"}
-    
-    payload_prices = {"type": "allMids"}
-    response_prices = requests.post(url, headers=headers, json=payload_prices).json()
-    
-    payload_funding = {"type": "metaAndAssetCtxs"}
-    response_funding = requests.post(url, headers=headers, json=payload_funding).json()
-    
-    funding_dict = {}
-    if isinstance(response_funding, list) and len(response_funding) > 1:
-        universe = response_funding[0].get("universe", [])
-        asset_ctxs = response_funding[1]
-        for i, asset in enumerate(universe):
-            name = asset.get("name")
-            if i < len(asset_ctxs):
-                funding_rate = float(asset_ctxs[i].get("funding", 0))
-                funding_dict[name] = funding_rate
-
-    return response_prices, funding_dict
-
-def send_telegram_message(token, chat_id, text):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Lỗi gửi Telegram: {e}")
-
-# --- SERVERLESS FUNCTION HANDLER ---
+# --- SERVERLESS FUNCTION HANDLER (Hỗ trợ phương thức POST + Request Body) ---
 class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        # 1. Bảo mật: Kiểm tra mã Secret Key từ cron-job.org gửi sang (Tránh người lạ tự ý bấm vào link API của bạn)
-        CRON_SECRET = os.environ.get("CRON_SECRET")
-        incoming_secret = self.headers.get("X-Cron-Secret")
+    def do_POST(self):
+        # 1. Đọc dữ liệu JSON gửi từ Request Body của cron-job.org
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length)
         
+        incoming_secret = None
+        try:
+            body_data = json.loads(post_data.decode('utf-8'))
+            incoming_secret = body_data.get("secret") # Lấy trường "secret" từ JSON
+        except Exception:
+            pass
+
+        # 2. Kiểm tra tính bảo mật
+        CRON_SECRET = os.environ.get("CRON_SECRET")
         if CRON_SECRET and incoming_secret != CRON_SECRET:
             self.send_response(401)
             self.end_headers()
             self.wfile.write(b"Unauthorized - Sai Secret Key")
             return
 
+        # 3. Tiến hành logic quét dữ liệu (Giữ nguyên phần code xử lý phía dưới)
         TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
         TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
         
@@ -122,3 +78,10 @@ class handler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             self.wfile.write(str(e).encode())
+
+    # Vẫn giữ lại do_GET để bạn dễ dàng test nhanh trên trình duyệt nếu cần
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot dang hoat dong dung huong. Hay dung phương thức POST de trigger.")
