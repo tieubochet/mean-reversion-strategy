@@ -14,7 +14,7 @@ CONFIG_PAIRS = {
         "symbol_b": "BRENTOIL",
         "mean": -3.69,
         "std": 2.52,
-        "long_threshold": -6.84,
+        "long_threshold": 0,
         "short_threshold": -0.78,
         "vol_per_leg": 50000
     }
@@ -114,4 +114,4 @@ def scan_bot():
             return str(e), 500
 
     # 2. Nếu truy cập bằng trình duyệt (GET) để test nhanh
-    return "Bot dang hoat dong tot (Flask Mode). Hay dung phương thức POST de trigger."
+    return "Mọi thông tin vui lòng liên hệ @tieubochet "
