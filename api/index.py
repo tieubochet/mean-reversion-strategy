@@ -8,9 +8,9 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "CL",           # ← Sửa ở đây
+        "symbol_a": "xyz:CL",           # ← Sửa ở đây
         "name_b": "Brent (B)",
-        "symbol_b": "BRENTOIL",     # ← Sửa ở đây
+        "symbol_b": "xyz:BRENTOIL",     # ← Sửa ở đây
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
@@ -35,26 +35,31 @@ def get_hyperliquid_data():
     url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
 
-    # Lấy meta + context (chứa danh sách coin + giá)
-    meta_resp = requests.post(
-        url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10
+    # Lấy meta + asset context (cách ổn định nhất hiện nay)
+    resp = requests.post(
+        url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=15
     ).json()
 
     prices = {}
     funding_dict = {}
 
-    if isinstance(meta_resp, list) and len(meta_resp) >= 2:
-        universe = meta_resp[0].get("universe", [])
-        asset_ctxs = meta_resp[1]
+    if isinstance(resp, list) and len(resp) >= 2:
+        universe = resp[0].get("universe", [])
+        asset_ctxs = resp[1]
 
         for i, asset in enumerate(universe):
-            coin_name = asset.get("name", "")
+            coin_name = asset.get("name", f"#{i}")
             if i < len(asset_ctxs):
                 ctx = asset_ctxs[i]
-                # Lưu giá mark
-                prices[coin_name] = ctx.get("markPx", 0)
-                # Lưu funding
+                mark_price = ctx.get("markPx") or ctx.get("oraclePx") or 0
+                prices[coin_name] = float(mark_price) if mark_price else 0
                 funding_dict[coin_name] = float(ctx.get("funding", 0))
+
+    # Debug: In ra danh sách coin để bạn biết tên chính xác
+    print("=== DANH SÁCH COIN CÓ TRÊN HYPERLIQUID ===")
+    for name in list(prices.keys()):
+        if any(x in name.upper() for x in ["CL", "BRENT", "OIL", "XYZ", "WTI"]):
+            print(f"  → {name}: {prices[name]}")
 
     return prices, funding_dict
 
