@@ -14,9 +14,9 @@ CONFIG_PAIRS = {
         "symbol_b": "BRENTOIL",
         "mean": -3.69,
         "std": 2.52,
-        "long_threshold": 100,
-        "short_threshold": -100,
-        "vol_per_leg": 50000
+        "long_threshold": 100.0,
+        "short_threshold": -100.0,
+        "vol_per_leg": 5000
     }
 }
 
