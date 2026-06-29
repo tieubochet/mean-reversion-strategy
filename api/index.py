@@ -80,6 +80,8 @@ def scan_bot():
                     continue
                 
                 current_spread = price_a - price_b
+                # Chèn thêm dòng này để theo dõi giá trị realtime trong Vercel Logs:
+                print(f"[{pair_key}] Giá A: {price_a} | Giá B: {price_b} -> Spread hien tai: {current_spread:.2f}")
                 is_triggered = False
                 signal_direction = ""
                 
