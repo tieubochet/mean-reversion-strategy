@@ -134,40 +134,84 @@ def send_telegram_message(token, chat_id, text):
 
 def build_check_message(prices, funding_rates):
     from datetime import datetime, timezone
+    
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     lines = [f"📊 *Snapshot thị trường - Hyperliquid*\n🕐 `{now}`\n"]
 
     for pair_key, cfg in CONFIG_PAIRS.items():
-        sym_a, sym_b = cfg["symbol_a"], cfg["symbol_b"]
+        sym_a = cfg["symbol_a"]
+        sym_b = cfg["symbol_b"]
+        name_a = cfg["name_a"]
+        name_b = cfg["name_b"]
+
         price_a = float(prices.get(sym_a, 0))
         price_b = float(prices.get(sym_b, 0))
+
         if price_a == 0 or price_b == 0:
+            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá\n")
             continue
 
         spread = price_a - price_b
-        z = calculate_z_score(spread, cfg["mean"], cfg["std"])
-        use_z = cfg.get("use_zscore", False)
+        mean = cfg["mean"]
+        std = cfg["std"]
+        z_score = calculate_z_score(spread, mean, std)
 
-        if use_z:
-            status = "🟢 LONG" if z <= cfg.get("long_z_threshold", -1.0) else \
-                     ("🔴 SHORT" if z >= cfg.get("short_z_threshold", 0.8) else "⏳ Trung tính")
+        use_zscore = cfg.get("use_zscore", False)
+        long_z = cfg.get("long_z_threshold", -1.0)
+        short_z = cfg.get("short_z_threshold", 0.8)
+        long_t = cfg.get("long_threshold", -3.7)
+        short_t = cfg.get("short_threshold", -2.8)
+        vol = cfg["vol_per_leg"]
+
+        # Xác định trạng thái
+        if use_zscore:
+            if z_score <= long_z:
+                status = "🟢 ĐẠT NGƯỠNG LONG"
+            elif z_score >= short_z:
+                status = "🔴 ĐẠT NGƯỠNG SHORT"
+            else:
+                status = "⏳ Trong vùng trung tính"
+            dist_to_long = f"{z_score - long_z:+.2f}"
+            dist_to_short = f"{short_z - z_score:+.2f}"
         else:
-            status = "🟢 LONG" if spread <= cfg.get("long_threshold", -3.7) else \
-                     ("🔴 SHORT" if spread >= cfg.get("short_threshold", -2.8) else "⏳ Trung tính")
+            if spread <= long_t:
+                status = "🟢 ĐẠT NGƯỠNG LONG"
+            elif spread >= short_t:
+                status = "🔴 ĐẠT NGƯỠNG SHORT"
+            else:
+                status = "⏳ Trong vùng trung tính"
+            dist_to_long = f"{spread - long_t:+.2f}"
+            dist_to_short = f"{short_t - spread:+.2f}"
 
-        fa, fb = funding_rates.get(sym_a, 0), funding_rates.get(sym_b, 0)
-        f1, a1 = calc_net_funding(fa, fb, True, cfg["vol_per_leg"])
-        f2, a2 = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
+        # Funding 2 chiều
+        fa = funding_rates.get(sym_a, 0)
+        fb = funding_rates.get(sym_b, 0)
+        f_long, apr_long = calc_net_funding(fa, fb, True, vol)
+        f_short, apr_short = calc_net_funding(fa, fb, False, vol)
 
-        lines.append(
+        def fmt_f(usd, apr):
+            icon = "✅" if usd >= 0 else "🔴"
+            sign = "+" if usd >= 0 else ""
+            return f"{icon} `{sign}${usd:.2f}/ngày` (APR `{apr:+.1f}%`)"
+
+        block = (
             f"─────────────────────\n"
-            f"🛢 *{cfg['name_a']} vs {cfg['name_b']}*\n"
-            f"Spread: `${spread:+.2f}` | **Z-Score: `{z:+.2f}`**\n"
-            f"Trạng thái: {status}\n"
-            f"Funding Long A: `+${f1:.2f}/ngày` | Short A: `+${f2:.2f}/ngày`\n"
+            f"🛢 *{name_a} vs {name_b}*\n"
+            f"  Giá {sym_a}: `${price_a:.4f}`\n"
+            f"  Giá {sym_b}: `${price_b:.4f}`\n"
+            f"  Spread: `${spread:+.2f}`\n"
+            f"  **Z-Score: `{z_score:+.2f}`**\n"
+            f"  Mean: `{mean}` | Std: `{std}`\n\n"
+            f"  📍 *Trạng thái:* {status}\n"
+            f"  ↳ Cách ngưỡng Long : `{dist_to_long}`\n"
+            f"  ↳ Cách ngưỡng Short: `{dist_to_short}`\n\n"
+            f"  💸 *Funding* (vốn `${vol:,}/leg`):\n"
+            f"  Long {sym_a}+Short {sym_b}: {fmt_f(f_long, apr_long)}\n"
+            f"  Short {sym_a}+Long {sym_b}: {fmt_f(f_short, apr_short)}\n"
         )
+        lines.append(block)
 
-    lines.append("─────────────────────\n💡 Dùng `/check` để cập nhật")
+    lines.append("─────────────────────\n💡 Dùng `/check` để cập nhật lại")
     return "\n".join(lines)
 
 # ==================== API ====================
