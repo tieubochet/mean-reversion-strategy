@@ -82,19 +82,6 @@ def build_check_message(prices, funding_rates):
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     lines = [f"📊 *Snapshot thị trường - Hyperliquid (DEX: xyz)*\n🕐 `{now}`\n"]
 
-    # === IN TOÀN BỘ DANH SÁCH MÃ ĐỂ TIỀN TRẠM CHÍNH XÁC ===
-    lines.append("🔍 *Tất cả các mã đang active trên DEX xyz:*")
-    all_keys = sorted(list(prices.keys()))
-    
-    # Chia danh sách thành các cụm nhỏ để tránh bị Telegram nuốt tin nhắn do quá dài
-    chunk_size = 15
-    for i in range(0, len(all_keys), chunk_size):
-        chunk = all_keys[i:i+chunk_size]
-        lines.append(f"  • " + ", ".join([f"`{k}`" for k in chunk]))
-        
-    lines.append("\n─────────────────────")
-    return "\n".join(lines)
-
     for pair_key, cfg in CONFIG_PAIRS.items():
         sym_a = cfg["symbol_a"].upper()
         sym_b = cfg["symbol_b"].upper()
