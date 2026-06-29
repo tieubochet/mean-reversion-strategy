@@ -15,7 +15,7 @@ CONFIG_PAIRS = {
         "mean": -3.69,
         "std": 2.52,
         "long_threshold": 0,
-        "short_threshold": -0.78,
+        "short_threshold": 0,
         "vol_per_leg": 50000
     }
 }
