@@ -129,18 +129,44 @@ def build_check_message(prices, funding_rates):
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     lines = [f"📊 *Snapshot thị trường - Hyperliquid*\n🕐 `{now}`\n"]
 
+    # === PHẦN ĐOÁN MÃ VÀ TRẢ KẾT QUẢ ĐOẠN ĐOÁN (DIAGNOSTIC) ===
+    lines.append("🔍 *Hệ thống tự động quét các mã liên quan:*")
+    found_any = False
+    for k, v in prices.items():
+        # Tìm tất cả các key có chứa chữ OIL, WTI hoặc BRENT trên sàn
+        if any(word in k.upper() for word in ["WTI", "BRENT", "OIL"]):
+            lines.append(f"  • Key: `{k}` ➔ Giá: `${float(v):.4f}`")
+            found_any = True
+    
+    if not found_any:
+        lines.append("  ⚠️ Không tìm thấy key nào chứa WTI/BRENT/OIL trong allMids")
+    
+    lines.append("\n─────────────────────")
+
+    # === PHẦN TÍNH SPREAD NHƯ CŨ ===
     for pair_key, cfg in CONFIG_PAIRS.items():
         sym_a = cfg["symbol_a"]
         sym_b = cfg["symbol_b"]
         name_a = cfg["name_a"]
         name_b = cfg["name_b"]
 
-        # Đọc trực tiếp giá từ map allMids theo ID cứng
+        # Thử tìm kiếm thông minh nếu cấu hình cứng không có trong prices
+        if sym_a not in prices:
+            for k in prices.keys():
+                if cfg["symbol_a"].upper() in k.upper():
+                    sym_a = k
+                    break
+        if sym_b not in prices:
+            for k in prices.keys():
+                if cfg["symbol_b"].upper() in k.upper():
+                    sym_b = k
+                    break
+
         price_a = float(prices.get(sym_a, 0))
         price_b = float(prices.get(sym_b, 0))
 
         if price_a == 0 or price_b == 0:
-            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá từ sàn cho ID (`{sym_a}` / `{sym_b}`)\n")
+            lines.append(f"❌ *{name_a} vs {name_b}*: Chưa cấu hình đúng mã.\n➔ Vui lòng xem danh sách quét phía trên để lấy Key chính xác điền vào CONFIG.")
             continue
 
         spread = price_a - price_b
@@ -151,52 +177,33 @@ def build_check_message(prices, funding_rates):
         use_zscore = cfg.get("use_zscore", False)
         long_z = cfg.get("long_z_threshold", -1.0)
         short_z = cfg.get("short_z_threshold", 0.8)
-        long_t = cfg.get("long_threshold", -3.7)
-        short_t = cfg.get("short_threshold", -2.8)
         vol = cfg["vol_per_leg"]
 
         if use_zscore:
-            if z_score <= long_z:
-                status = "🟢 ĐẠT NGƯỠNG LONG"
-            elif z_score >= short_z:
-                status = "🔴 ĐẠT NGƯỠNG SHORT"
-            else:
-                status = "⏳ Trong vùng trung tính"
+            status = "🟢 ĐẠT NGƯỠNG LONG" if z_score <= long_z else "🔴 ĐẠT NGƯỠNG SHORT" if z_score >= short_z else "⏳ Trong vùng trung tính"
             dist_to_long = f"{z_score - long_z:+.2f}"
             dist_to_short = f"{short_z - z_score:+.2f}"
         else:
-            if spread <= long_t:
-                status = "🟢 ĐẠT NGƯỠNG LONG"
-            elif spread >= short_t:
-                status = "🔴 ĐẠT NGƯỠNG SHORT"
-            else:
-                status = "⏳ Trong vùng trung tính"
-            dist_to_long = f"{spread - long_t:+.2f}"
-            dist_to_short = f"{short_t - spread:+.2f}"
+            status = "⏳ Trong vùng trung tính"
+            dist_to_long = "0.00"
+            dist_to_short = "0.00"
 
-        # Lấy funding rate chuẩn xác theo ID hoa/thường
-        fa = funding_rates.get(sym_a.upper(), 0)
-        fb = funding_rates.get(sym_b.upper(), 0)
+        fa = funding_rates.get(sym_a, 0)
+        fb = funding_rates.get(sym_b, 0)
         f_long, apr_long = calc_net_funding(fa, fb, True, vol)
         f_short, apr_short = calc_net_funding(fa, fb, False, vol)
 
         def fmt_f(usd, apr):
             icon = "✅" if usd >= 0 else "🔴"
-            sign = "+" if usd >= 0 else ""
-            return f"{icon} `{sign}${usd:.2f}/ngày` (APR `{apr:+.1f}%`)"
+            return f"{icon} `{usd:+.2f}/ngày` (APR `{apr:+.1f}%`)"
 
         block = (
-            f"─────────────────────\n"
             f"🛢 *{name_a} vs {name_b}*\n"
-            f"  Mã WTI (`{sym_a}`): `${price_a:.4f}`\n"
-            f"  Mã Brent (`{sym_b}`): `${price_b:.4f}`\n"
-            f"  Spread: `${spread:+.2f}`\n"
-            f"  **Z-Score: `{z_score:+.2f}`**\n"
-            f"  Mean: `{mean}` | Std: `{std}`\n\n"
+            f"  Mã A (`{sym_a}`): `${price_a:.4f}`\n"
+            f"  Mã B (`{sym_b}`): `${price_b:.4f}`\n"
+            f"  Spread: `${spread:+.2f}` | **Z-Score: `{z_score:+.2f}`**\n\n"
             f"  📍 *Trạng thái:* {status}\n"
-            f"  ↳ Cách ngưỡng Long : `{dist_to_long}`\n"
-            f"  ↳ Cách ngưỡng Short: `{dist_to_short}`\n\n"
-            f"  💸 *Funding* (vốn `${vol:,}/leg`):\n"
+            f"  💸 *Funding*:\n"
             f"  Long A + Short B: {fmt_f(f_long, apr_long)}\n"
             f"  Short A + Long B: {fmt_f(f_short, apr_short)}\n"
         )
