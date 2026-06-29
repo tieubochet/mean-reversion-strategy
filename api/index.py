@@ -5,13 +5,13 @@ from flask import Flask, request
 app = Flask(__name__)
 
 # ==================== CONFIG ====================
-# Điền THẲNG mã hệ thống dạng @ID đã được xác thực từ log để bot chạy chính xác 100%
+# Điền chính xác mã token thuộc DEX "xyz" theo chuẩn tài liệu HIP-3
 CONFIG_PAIRS = {
     "WTI_BRENT": {
-        "name_a": "WTIOIL-USDC",
-        "symbol_a": "@107",             # Mã cứng của WTI trên Hyperliquid
-        "name_b": "BRENTOIL",
-        "symbol_b": "@156",             # Mã cứng của Brent trên Hyperliquid
+        "name_a": "WTI (A)",
+        "symbol_a": "xyz:WTIOIL",         # ← Tên chính xác trên sàn phụ xyz
+        "name_b": "Brent (B)",
+        "symbol_b": "xyz:BRENTOIL",      # ← Tên chính xác trên sàn phụ xyz
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
@@ -39,51 +39,36 @@ def get_hyperliquid_data():
     prices = {}
     funding_dict = {}
 
-    # === 1. LẤY GIÁ CÁC CẶP PERP (BAO GỒM CẢ HIP-3) ===
+    # Gọi API allMids kèm tham số truyền vào dex là "xyz"
     try:
-        # Sử dụng metaAndAssetCtxs để lấy đồng thời trạng thái giá mid của toàn bộ vũ trụ (universe)
+        mids_resp = requests.post(
+            url, headers=headers, json={"type": "allMids", "dex": "xyz"}, timeout=10
+        ).json()
+        if isinstance(mids_resp, dict):
+            prices = {k.upper(): float(v) for k, v in mids_resp.items() if v}
+    except Exception as e:
+        print(f"Lỗi lấy dữ liệu allMids từ DEX xyz: {e}")
+
+    # Gọi API metaAndAssetCtxs kèm tham số truyền vào dex là "xyz" để lấy funding rate
+    try:
         meta_resp = requests.post(
-            url, headers=headers, json={"type": "metaAndAssetCtxs"}  # TODO: iterate all dexes for HIP-3, timeout=10
+            url, headers=headers, json={"type": "metaAndAssetCtxs", "dex": "xyz"}, timeout=10
         ).json()
 
         if isinstance(meta_resp, list) and len(meta_resp) >= 2:
             universe = meta_resp[0].get("universe", [])
             asset_ctxs = meta_resp[1]
 
-            # Quét qua danh sách universe để bóc tách thông tin tên hiển thị động
             for i, asset in enumerate(universe):
-                # Tên hệ thống (Có thể là '@107' hoặc 'WTIOIL-USDC' tùy thuộc vào phiên bản cập nhật HIP-3)
-                internal_name = asset.get("name", "")
-                
-                # Trích xuất dữ liệu context tài sản tại index tương ứng
-                if i < len(asset_ctxs) and internal_name:
-                    ctx = asset_ctxs[i]
-                    
-                    # Lấy giá mid-price chính xác đang active từ context tài sản
-                    mid_price = float(ctx.get("midPx") or ctx.get("midPrice") or 0)
-                    funding_rate = float(ctx.get("funding", 0))
-                    
-                    if mid_price > 0:
-                        prices[internal_name.upper()] = mid_price
-                        # Thử map thêm trường hợp loại bỏ các ký tự đặc biệt để bot đối chiếu chuỗi dễ hơn
-                        clean_name = internal_name.replace("@", "").upper()
-                        prices[clean_name] = mid_price
-                        
-                    funding_dict[internal_name.upper()] = funding_rate
-                    funding_dict[clean_name] = funding_rate
-
+                coin_name = asset.get("name", "")
+                if i < len(asset_ctxs) and coin_name:
+                    funding = float(asset_ctxs[i].get("funding", 0))
+                    # Token trên sàn phụ xyz trả về dưới dạng "xyz:WTIOIL" hoặc "WTIOIL" tùy cấu trúc, ta lưu cả 2
+                    funding_dict[coin_name.upper()] = funding
+                    if not coin_name.upper().startswith("XYZ:"):
+                        funding_dict[f"XYZ:{coin_name.upper()}"] = funding
     except Exception as e:
-        print(f"Lỗi khi xử lý cấu trúc dữ liệu Perp/HIP-3: {e}")
-
-    # === 2. BỔ SUNG QUÉT ĐỒNG THỜI HOÀN TOÀN TỪ ALLMIDS (FALLBACK) ===
-    try:
-        mids_resp = requests.post(url, headers=headers, json={"type": "allMids"}, timeout=10).json()
-        if isinstance(mids_resp, dict):
-            for k, v in mids_resp.items():
-                if v:
-                    prices[k.upper()] = float(v)
-    except Exception as e:
-        print(f"Lỗi fallback allMids: {e}")
+        print(f"Lỗi lấy funding rate từ DEX xyz: {e}")
 
     return prices, funding_dict
 
@@ -91,103 +76,32 @@ def calc_net_funding(funding_a, funding_b, is_long_a, vol):
     net_rate = (funding_b - funding_a) if is_long_a else (funding_a - funding_b)
     return net_rate * 24 * vol, net_rate * 24 * 365 * 100
 
-def evaluate_signal(config, current_spread, is_long_a, net_usd_day, price_a):
-    vol = config["vol_per_leg"]
-    mean = config["mean"]
-    std = config["std"]
-    avg_hold_days = config["avg_hold_hours"] / 24
-    fee_bps = config["fee_bps"]
-
-    units = vol / price_a if price_a > 0 else 0
-    z_score = calculate_z_score(current_spread, mean, std)
-
-    if is_long_a:
-        spread_to_mean = mean - current_spread
-    else:
-        spread_to_mean = current_spread - mean
-
-    gross = spread_to_mean * units
-    funding_total = net_usd_day * avg_hold_days
-    fee = vol * 2 * fee_bps * 2
-    net_pnl = gross + funding_total - fee
-
-    min_pnl = config.get("min_net_pnl", 0)
-    max_loss = config.get("max_funding_loss", 50)
-
-    if net_pnl >= min_pnl:
-        quality, should_send, rec = "good", True, "✅ Signal tốt - Nên vào lệnh"
-    elif funding_total >= -max_loss and net_pnl > -30:
-        quality, should_send, rec = "acceptable", True, "🟡 Signal chấp nhận được"
-    else:
-        quality, should_send, rec = "poor", False, "🚫 Signal yếu - Bỏ qua"
-
-    breakeven = abs(funding_total) / units if funding_total < 0 and units > 0 else 0
-    should_exit = abs(z_score) <= config.get("exit_z_threshold", 0.2)
-
-    return {
-        "units": round(units, 4),
-        "z_score": round(z_score, 2),
-        "gross_spread_pnl": round(gross, 2),
-        "funding_net_total": round(funding_total, 2),
-        "fee_total": round(fee, 2),
-        "net_pnl": round(net_pnl, 2),
-        "avg_hold_days": round(avg_hold_days, 1),
-        "should_send": should_send,
-        "quality": quality,
-        "recommendation": rec,
-        "breakeven_spread_needed": round(breakeven, 2),
-        "is_funding_negative": funding_total < 0,
-        "should_exit": should_exit,
-    }
-
 def build_check_message(prices, funding_rates):
     from datetime import datetime, timezone
     
     now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
-    lines = [f"📊 *Snapshot thị trường - Hyperliquid*\n🕐 `{now}`\n"]
+    lines = [f"📊 *Snapshot thị trường - Hyperliquid (DEX: xyz)*\n🕐 `{now}`\n"]
 
-    # === HỆ THỐNG TRA CỨU CHUỖI TOÀN DIỆN ===
-    lines.append("🔍 *Danh sách các mã tìm thấy trên sàn:*")
-    found_any = False
-    
-    # Duyệt tìm bất kỳ key nào chứa ký tự dầu khí hoặc có mức giá thực tế từ 65 đến 75
-    for k, v in prices.items():
-        price_val = float(v)
-        if any(w in k for w in ["WTI", "BRENT", "OIL"]) or (65 <= price_val <= 75):
-            lines.append(f"  • Key: `{k}` ➔ Giá thực tế: `${price_val:.4f}`")
-            found_any = True
-            
-    if not found_any:
-        lines.append("  ⚠️ Không tìm thấy kết quả phù hợp nào.")
-        
-    lines.append("\n─────────────────────")
-    
-    # ... (Giữ nguyên logic tính toán cặp spread CONFIG_PAIRS phía dưới của bạn)
-
-    # === PHẦN TÍNH SPREAD NHƯ CŨ ===
     for pair_key, cfg in CONFIG_PAIRS.items():
-        sym_a = cfg["symbol_a"]
-        sym_b = cfg["symbol_b"]
+        sym_a = cfg["symbol_a"].upper()
+        sym_b = cfg["symbol_b"].upper()
         name_a = cfg["name_a"]
         name_b = cfg["name_b"]
 
-        # Thử tìm kiếm thông minh nếu cấu hình cứng không có trong prices
-        if sym_a not in prices:
-            for k in prices.keys():
-                if cfg["symbol_a"].upper() in k.upper():
-                    sym_a = k
-                    break
-        if sym_b not in prices:
-            for k in prices.keys():
-                if cfg["symbol_b"].upper() in k.upper():
-                    sym_b = k
-                    break
-
+        # Tra cứu trực tiếp từ map prices thu được của phân vùng DEX xyz
         price_a = float(prices.get(sym_a, 0))
         price_b = float(prices.get(sym_b, 0))
 
+        # Fallback phòng trường hợp key trả về không chứa tiền tố "xyz:"
+        if price_a == 0 and sym_a.startswith("XYZ:"):
+            price_a = float(prices.get(sym_a.split(":")[1], 0))
+        if price_b == 0 and sym_b.startswith("XYZ:"):
+            price_b = float(prices.get(sym_b.split(":")[1], 0))
+
         if price_a == 0 or price_b == 0:
-            lines.append(f"❌ *{name_a} vs {name_b}*: Chưa cấu hình đúng mã.\n➔ Vui lòng xem danh sách quét phía trên để lấy Key chính xác điền vào CONFIG.")
+            lines.append(f"❌ *{name_a} vs {name_b}*: Không lấy được giá từ DEX xyz\n(Mã tìm kiếm: `{sym_a}` / `{sym_b}`)\n")
+            # In thử một vài mã có trong dữ liệu để debug nhanh
+            lines.append("💡 Các mã hiện có trên DEX này: " + ", ".join(list(prices.keys())[:5]))
             continue
 
         spread = price_a - price_b
@@ -201,30 +115,40 @@ def build_check_message(prices, funding_rates):
         vol = cfg["vol_per_leg"]
 
         if use_zscore:
-            status = "🟢 ĐẠT NGƯỠNG LONG" if z_score <= long_z else "🔴 ĐẠT NGƯỠNG SHORT" if z_score >= short_z else "⏳ Trong vùng trung tính"
+            if z_score <= long_z:
+                status = "🟢 ĐẠT NGƯỠNG LONG"
+            elif z_score >= short_z:
+                status = "🔴 ĐẠT NGƯỠNG SHORT"
+            else:
+                status = "⏳ Trong vùng trung tính"
             dist_to_long = f"{z_score - long_z:+.2f}"
             dist_to_short = f"{short_z - z_score:+.2f}"
         else:
             status = "⏳ Trong vùng trung tính"
-            dist_to_long = "0.00"
-            dist_to_short = "0.00"
+            dist_to_long, dist_to_short = "0.00", "0.00"
 
-        fa = funding_rates.get(sym_a, 0)
-        fb = funding_rates.get(sym_b, 0)
+        fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
+        fb = funding_rates.get(sym_b, funding_rates.get(sym_b.replace("XYZ:", ""), 0))
         f_long, apr_long = calc_net_funding(fa, fb, True, vol)
         f_short, apr_short = calc_net_funding(fa, fb, False, vol)
 
         def fmt_f(usd, apr):
             icon = "✅" if usd >= 0 else "🔴"
-            return f"{icon} `{usd:+.2f}/ngày` (APR `{apr:+.1f}%`)"
+            sign = "+" if usd >= 0 else ""
+            return f"{icon} `{sign}${usd:.2f}/ngày` (APR `{apr:+.1f}%`)"
 
         block = (
+            f"─────────────────────\n"
             f"🛢 *{name_a} vs {name_b}*\n"
-            f"  Mã A (`{sym_a}`): `${price_a:.4f}`\n"
-            f"  Mã B (`{sym_b}`): `${price_b:.4f}`\n"
-            f"  Spread: `${spread:+.2f}` | **Z-Score: `{z_score:+.2f}`**\n\n"
+            f"  Giá WTI (`{sym_a}`): `${price_a:.4f}`\n"
+            f"  Giá Brent (`{sym_b}`): `${price_b:.4f}`\n"
+            f"  Spread: `${spread:+.2f}`\n"
+            f"  **Z-Score: `{z_score:+.2f}`**\n"
+            f"  Mean: `{mean}` | Std: `{std}`\n\n"
             f"  📍 *Trạng thái:* {status}\n"
-            f"  💸 *Funding*:\n"
+            f"  ↳ Cách ngưỡng Long : `{dist_to_long}`\n"
+            f"  ↳ Cách ngưỡng Short: `{dist_to_short}`\n\n"
+            f"  💸 *Funding* (vốn `${vol:,}/leg`):\n"
             f"  Long A + Short B: {fmt_f(f_long, apr_long)}\n"
             f"  Short A + Long B: {fmt_f(f_short, apr_short)}\n"
         )
@@ -258,7 +182,7 @@ def telegram_webhook():
 
     if text.startswith("/check"):
         try:
-            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, "⏳ Đang kết nối API sàn...")
+            send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, "⏳ Đang kết nối phân vùng DEX xyz trên HyperCore...")
             prices, funding = get_hyperliquid_data()
             reply = build_check_message(prices, funding)
             send_telegram_message(TELEGRAM_BOT_TOKEN, chat_id, reply)
@@ -272,8 +196,3 @@ def telegram_webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-# NOTE:
-# This version only fixes midPx parsing. To fully support HIP-3 WTI/BRENTOIL,
-# replace get_hyperliquid_data() with logic that enumerates all dexes and calls
-# metaAndAssetCtxs/allMids for each dex, merging results by coin name.
