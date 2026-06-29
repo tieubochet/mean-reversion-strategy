@@ -35,6 +35,7 @@ def get_hyperliquid_data():
     url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
     prices = requests.post(url, headers=headers, json={"type": "allMids"}, timeout=10).json()
+    print("Danh sách coin có trên Hyperliquid:", list(prices.keys())[:30])
     funding_resp = requests.post(url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10).json()
 
     funding_dict = {}
