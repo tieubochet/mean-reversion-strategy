@@ -8,9 +8,9 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "CL",           # ← Sửa ở đây
+        "symbol_a": "xyz:CL",           # ← Sửa ở đây
         "name_b": "Brent (B)",
-        "symbol_b": "BRENTOIL",     # ← Sửa ở đây
+        "symbol_b": "xyz:BRENTOIL",     # ← Sửa ở đây
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
@@ -34,17 +34,28 @@ def calculate_z_score(spread, mean, std):
 def get_hyperliquid_data():
     url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
-    prices = requests.post(url, headers=headers, json={"type": "allMids"}, timeout=10).json()
-    print("Danh sách coin có trên Hyperliquid:", list(prices.keys())[:30])
-    funding_resp = requests.post(url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10).json()
 
+    # Lấy meta + context (chứa danh sách coin + giá)
+    meta_resp = requests.post(
+        url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10
+    ).json()
+
+    prices = {}
     funding_dict = {}
-    if isinstance(funding_resp, list) and len(funding_resp) > 1:
-        universe = funding_resp[0].get("universe", [])
-        asset_ctxs = funding_resp[1]
+
+    if isinstance(meta_resp, list) and len(meta_resp) >= 2:
+        universe = meta_resp[0].get("universe", [])
+        asset_ctxs = meta_resp[1]
+
         for i, asset in enumerate(universe):
+            coin_name = asset.get("name", "")
             if i < len(asset_ctxs):
-                funding_dict[asset.get("name")] = float(asset_ctxs[i].get("funding", 0))
+                ctx = asset_ctxs[i]
+                # Lưu giá mark
+                prices[coin_name] = ctx.get("markPx", 0)
+                # Lưu funding
+                funding_dict[coin_name] = float(ctx.get("funding", 0))
+
     return prices, funding_dict
 
 def calc_net_funding(funding_a, funding_b, is_long_a, vol):
