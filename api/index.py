@@ -8,9 +8,9 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "CL",           # ← Sửa ở đây
+        "symbol_a": "xyz:CL",           # ← Sửa ở đây
         "name_b": "Brent (B)",
-        "symbol_b": "BRENTOIL",     # ← Sửa ở đây
+        "symbol_b": "xyz:BRENTOIL",     # ← Sửa ở đây
         "mean": -3.69,
         "std": 2.52,
         "use_zscore": True,
@@ -35,35 +35,52 @@ def get_hyperliquid_data():
     url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
 
-    # Lấy meta + asset context (cách ổn định nhất hiện nay)
-    resp = requests.post(
-        url, headers=headers, json={"type": "perpDexs"}, timeout=15
-    ).json()
-
     prices = {}
     funding_dict = {}
 
-    if isinstance(resp, list) and len(resp) >= 2:
-        universe = resp[0].get("universe", [])
-        asset_ctxs = resp[1]
+    # === Thử lấy bằng allMids (thường ổn định hơn với HIP-3) ===
+    try:
+        mids_resp = requests.post(
+            url, headers=headers, json={"type": "allMids"}, timeout=10
+        ).json()
 
-        for i, asset in enumerate(universe):
-            coin_name = asset.get("name", f"#{i}")
-            if i < len(asset_ctxs):
-                ctx = asset_ctxs[i]
-                mark_price = ctx.get("markPx") or ctx.get("oraclePx") or 0
-                prices[coin_name] = float(mark_price) if mark_price else 0
-                funding_dict[coin_name] = float(ctx.get("funding", 0))
+        if isinstance(mids_resp, dict):
+            prices = {k: float(v) for k, v in mids_resp.items() if v}
+    except Exception as e:
+        print(f"Lỗi allMids: {e}")
 
-        # Debug: In coin có giá khoảng dầu thô
-    print("=== TẤT CẢ COIN CÓ GIÁ KHOẢNG 60-80 ===")
+    # === Lấy funding từ metaAndAssetCtxs ===
+    try:
+        meta_resp = requests.post(
+            url, headers=headers, json={"type": "metaAndAssetCtxs"}, timeout=10
+        ).json()
+
+        if isinstance(meta_resp, list) and len(meta_resp) >= 2:
+            universe = meta_resp[0].get("universe", [])
+            asset_ctxs = meta_resp[1]
+
+            for i, asset in enumerate(universe):
+                coin_name = asset.get("name", "")
+                if i < len(asset_ctxs):
+                    funding = float(asset_ctxs[i].get("funding", 0))
+                    funding_dict[coin_name] = funding
+    except Exception as e:
+        print(f"Lỗi metaAndAssetCtxs: {e}")
+
+    # === DEBUG: In tất cả coin có giá 60-80 ===
+    print("=== COIN CÓ GIÁ 60-80 ===")
+    oil_coins = []
     for name, price in prices.items():
         try:
             p = float(price)
             if 60 <= p <= 80:
                 print(f"  {name}: {p}")
+                oil_coins.append(name)
         except:
             pass
+
+    if not oil_coins:
+        print("⚠️ Không tìm thấy coin nào giá 60-80")
 
     return prices, funding_dict
 
