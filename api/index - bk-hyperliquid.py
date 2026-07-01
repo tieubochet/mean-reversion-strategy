@@ -8,27 +8,20 @@ app = Flask(__name__)
 CONFIG_PAIRS = {
     "WTI_BRENT": {
         "name_a": "WTI (A)",
-        "symbol_a": "XYZ:CL",
+        "symbol_a": "XYZ:CL",         
         "name_b": "Brent (B)",
-        "symbol_b": "XYZ:BRENTOIL",
-
-        # === THAM SỐ THỐNG KÊ REALISTIC (dựa trên backtest M15 3 tháng) ===
-        "mean": -3.80,               # Mean Spread (CL - BRENT) thực tế ~ -3.80 đến -3.87
-        "std": 1.72,                 # Std realistic theo dữ liệu M15 (trước đó dùng 0.65 là quá thấp)
-
+        "symbol_b": "XYZ:BRENTOIL",      
+        "mean": -3.50,               # Cập nhật theo Mean m15
+        "std": 0.65,                 # Cập nhật theo Std m15
         "use_zscore": True,
-
-        # Khuyến nghị dùng ngưỡng Z-score cân bằng
-        "long_z_threshold": -1.85,   # ~ -1.85 Z (khoảng P8-P10, tín hiệu khá mạnh)
-        "short_z_threshold": 1.85,   # ~ +1.85 Z (khoảng P90-P92)
-        "exit_z_threshold": 0.30,    # Thoát khi về gần vùng trung vị
-
-        # === QUẢN TRỊ RỦI RO & VỐN ===
-        "vol_per_leg": 14000,        # Quy mô vốn $14,000/leg
-        "avg_hold_hours": 16.5,      # Thời gian giữ lệnh trung bình (dùng để tính Expected PnL)
-        "fee_bps": 0.00022,          # Maker fee 2.2 bps (trade.xyz)
-        "min_net_pnl": 35,           # Expected Funding PnL tối thiểu trong 1 lệnh
-        "max_funding_loss": 45,      # Chấp nhận lỗ Funding tối đa $45/ngày
+        "long_z_threshold": -1.38,   # Tương đương Spread = -$4.40 (P10)
+        "short_z_threshold": 1.23,   # Tương đương Spread = -$2.70 (P90)
+        "exit_z_threshold": 0.08,    # Tương đương Spread = -$3.45 (P50 - Trung vị)
+        "vol_per_leg": 14000,        # Quy mô vốn $14,000/leg theo cấu hình backtest m15
+        "avg_hold_hours": 16.5,      # Thời gian giữ lệnh trung bình m15
+        "fee_bps": 0.00022,          # Maker fee 2.2 bps của trade.xyz
+        "min_net_pnl": 30,
+        "max_funding_loss": 40,      # Ngưỡng lỗ Funding tối đa chấp nhận được ($40/ngày)
     }
 }
 
@@ -141,7 +134,7 @@ def build_check_message(prices, funding_rates):
 # ==================== API ENDPOINTS ====================
 
 @app.route("/api", methods=["POST", "GET"])
-@app.route("/api/", methods=["POST", "GET"])  # Chống lỗi 404 khi cronjob tự động thêm dấu / ở cuối
+@app.route("/api/", methods=["POST", "GET"]) # Chống lỗi 404 khi cronjob tự động thêm dấu / ở cuối
 def scan_bot():
     """
     ENDPOINT DÀNH CHO CRON-JOB NGOÀI KÍCH HOẠT MỖI 5 PHÚT HOẶC 15 PHÚT
@@ -166,65 +159,49 @@ def scan_bot():
 
             triggered = False
             direction = ""
-            side = ""
             net_usd_day, net_apr = 0, 0
+            funding_pass = False
 
             fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
             fb = funding_rates.get(sym_b, funding_rates.get(sym_b.replace("XYZ:", ""), 0))
 
-            # Xác định hướng và tính funding
+            # KIỂM TRA ĐIỀU KIỆN 1: Đạt ngưỡng Spread Long (Z-Score <= long_z_threshold)
             if z_score <= cfg["long_z_threshold"]:
-                side = "LONG"
                 net_usd_day, net_apr = calc_net_funding(fa, fb, True, cfg["vol_per_leg"])
-                direction = f"🟢 *VÀO LỆNH LONG SPREAD (Khung m15)*:\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
+                
+                # KIỂM TRA ĐIỀU KIỆN 2: Funding mang lại lợi nhuận HOẶC lỗ trong mức chấp nhận được
+                if net_usd_day >= 0 or abs(net_usd_day) <= cfg["max_funding_loss"]:
+                    triggered = True
+                    funding_pass = True
+                    direction = f"🟢 *VÀO LỆNH LONG SPREAD (Khung m15)*:\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
+                else:
+                    print(f"[Bỏ qua] Spread đạt ngưỡng LONG nhưng Funding quá bất lợi: Trả {net_usd_day:.2f}$/ngày")
+
+            # KIỂM TRA ĐIỀU KIỆN 1: Đạt ngưỡng Spread Short (Z-Score >= short_z_threshold)
             elif z_score >= cfg["short_z_threshold"]:
-                side = "SHORT"
                 net_usd_day, net_apr = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
-                direction = f"🔴 *VÀO LỆNH SHORT SPREAD (Khung m15)*:\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
-            else:
-                continue  # Không đạt ngưỡng Z-score
+                
+                # KIỂM TRA ĐIỀU KIỆN 2: Funding mang lại lợi nhuận HOẶC lỗ trong mức chấp nhận được
+                if net_usd_day >= 0 or abs(net_usd_day) <= cfg["max_funding_loss"]:
+                    triggered = True
+                    funding_pass = True
+                    direction = f"🔴 *VÀO LỆNH SHORT SPREAD (Khung m15)*:\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
+                else:
+                    print(f"[Bỏ qua] Spread đạt ngưỡng SHORT nhưng Funding quá bất lợi: Trả {net_usd_day:.2f}$/ngày")
 
-            # Tính expected funding PnL trong thời gian giữ lệnh trung bình
-            avg_hold = cfg.get("avg_hold_hours", 16.5)
-            expected_funding_pnl = net_usd_day * (avg_hold / 24)
-            min_pnl_req = cfg.get("min_net_pnl", 0)
-
-            # KIỂM TRA 2 ĐIỀU KIỆN
-            funding_ok = (net_usd_day >= 0) or (abs(net_usd_day) <= cfg.get("max_funding_loss", 999))
-            pnl_ok = expected_funding_pnl >= min_pnl_req
-
-            if funding_ok and pnl_ok:
-                triggered = True
-            else:
-                # LOG CHI TIẾT KHI BỎ QUA
-                if not funding_ok:
-                    print(f"[SKIP - FUNDING] {pair_key} | Z={z_score:+.2f} | Spread={spread:+.2f} | "
-                          f"Side={side} | Funding={net_usd_day:+.2f}$/ngày | "
-                          f"Vượt ngưỡng max_loss ±{cfg.get('max_funding_loss', 0)}$")
-                elif not pnl_ok:
-                    print(f"[SKIP - MIN_PNL] {pair_key} | Z={z_score:+.2f} | Spread={spread:+.2f} | "
-                          f"Side={side} | Expected Funding PnL={expected_funding_pnl:+.2f}$ "
-                          f"< min_net_pnl={min_pnl_req}$ (Hold ~{avg_hold}h)")
-
-            # GỬI ALERT CHỈ KHI ĐẠT CẢ 2 ĐIỀU KIỆN
-            if triggered:
-                funding_status_str = (
-                    f"✅ Nhận: `{net_usd_day:+.2f}$/ngày`"
-                    if net_usd_day >= 0 else
-                    f"⚠️ Trả: `{net_usd_day:+.2f}$/ngày` (Trong ngưỡng cho phép)"
-                )
-
+            # GỬI TIN NHẮN ALERT NẾU THOẢ MÃN ĐỒNG THỜI CẢ 2 ĐIỀU KIỆN
+            if triggered and funding_pass:
+                funding_status_str = f"✅ Nhận: `{net_usd_day:+.2f}$/ngày`" if net_usd_day >= 0 else f"⚠️ Trả: `{net_usd_day:+.2f}$/ngày` (Trong ngưỡng cho phép)"
+                
                 alert_msg = (
                     f"🚨 *TÍN HIỆU MEAN REVERSION KHUNG m15!*\n\n"
                     f"🥇 *{cfg['name_a']} vs {cfg['name_b']}*\n"
                     f"Spread hiện tại: `${spread:+.2f}`\n"
                     f"**Z-Score hiện tại: `{z_score:+.2f}`** *(Ngưỡng: {cfg['long_z_threshold']} / {cfg['short_z_threshold']})*\n\n"
                     f"{direction}\n\n"
-                    f"💸 *Trạng thái Funding ước tính (Vốn ${cfg['vol_per_leg']:,}/leg, giữ ~{avg_hold}h)*:\n"
+                    f"💸 *Trạng thái Funding ước tính (Vốn ${cfg['vol_per_leg']:,}/leg)*:\n"
                     f"  • {funding_status_str}\n"
-                    f"  • Expected Funding PnL: `{expected_funding_pnl:+.2f}$`\n"
-                    f"  • Tỷ suất net APR: `{net_apr:+.1f}%`\n\n"
-                    f"✅ Đã vượt qua 2 điều kiện lọc: Spread + Funding/PnL"
+                    f"  • Tỷ suất net APR: `{net_apr:+.1f}%`"
                 )
                 send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, alert_msg)
                 
@@ -232,7 +209,7 @@ def scan_bot():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
-@app.route("/api/webhook", methods=["POST"])  # Cập nhật /api/webhook để chạy chuẩn xác trên Vercel
+@app.route("/api/webhook", methods=["POST"]) # Cập nhật /api/webhook để chạy chuẩn xác trên Vercel
 def telegram_webhook():
     update = request.get_json(silent=True)
     if not update: return "OK", 200
