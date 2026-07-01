@@ -19,8 +19,8 @@ CONFIG_PAIRS = {
         "use_zscore": True,
 
         # Khuyến nghị dùng ngưỡng Z-score cân bằng
-        "long_z_threshold": -1.85,   # ~ -1.85 Z (khoảng P8-P10, tín hiệu khá mạnh)
-        "short_z_threshold": 1.85,   # ~ +1.85 Z (khoảng P90-P92)
+        "long_z_threshold": -1.6,   # ~ -1.85 Z (khoảng P8-P10, tín hiệu khá mạnh)
+        "short_z_threshold": 1.6,   # ~ +1.85 Z (khoảng P90-P92)
         "exit_z_threshold": 0.30,    # Thoát khi về gần vùng trung vị
 
         # === QUẢN TRỊ RỦI RO & VỐN ===
