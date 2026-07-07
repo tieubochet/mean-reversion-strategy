@@ -134,7 +134,7 @@ def build_check_message(prices, funding_rates):
         sym_b = cfg["symbol_b"].upper()
 
         price_a = float(prices.get(sym_a, prices.get(sym_a.replace("XYZ:", ""), 0)))
-        price_b = 10 * float(prices.get(sym_b, prices.get(sym_b.replace("MKTS:", ""), 0)))
+        price_b = float(prices.get(sym_b, prices.get(sym_b.replace("MKTS:", ""), 0)))
 
         if price_a == 0 or price_b == 0:
             lines.append(f"❌ *{cfg['name_a']} vs {cfg['name_b']}*: Không lấy được giá\n")
