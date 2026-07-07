@@ -17,9 +17,9 @@ CONFIG_PAIRS = {
         "mean": -3.80,
         "std": 1.72,
 
-        "long_z_threshold": -1.6,
-        "short_z_threshold": 1.6,
-        "exit_z_threshold": 0.30,
+        "long_z_threshold": -1.55,
+        "short_z_threshold": 1.55,
+        "exit_z_threshold": 0.35,
 
         "vol_per_leg": 14000,
         "avg_hold_hours": 16.5,
@@ -35,11 +35,11 @@ CONFIG_PAIRS = {
         "symbol_b": "MKTS:USTECH",
 
         "mean": 0,
-        "std": 1.9,
+        "std": 1.85,
 
-        "long_z_threshold": -1.7,
-        "short_z_threshold": 1.7,
-        "exit_z_threshold": 0.4,
+        "long_z_threshold": -1.6,
+        "short_z_threshold": 1.6,
+        "exit_z_threshold": 0.35,
 
         "vol_per_leg": 9000,
         "avg_hold_hours": 12,
