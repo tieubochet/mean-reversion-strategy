@@ -35,16 +35,16 @@ CONFIG_PAIRS = {
         "symbol_b": "MKTS:US500",
 
         "mean": 0,
-        "std": 1.85,
+        "std": 1.0,                    # Nên điều chỉnh sau khi có dữ liệu thực
 
-        "long_z_threshold": -1.60,
-        "short_z_threshold": 1.60,
-        "exit_z_threshold": 0.35,
+        "long_z_threshold": -1.50,     # Tối ưu theo backtest
+        "short_z_threshold": 1.50,     # Tối ưu theo backtest
+        "exit_z_threshold": 0.40,
 
         "vol_per_leg": 9000,
-        "avg_hold_hours": 12,
-        "min_net_pnl": 20,
-        "max_funding_loss": 40,
+        "avg_hold_hours": 11,
+        "min_net_pnl": 18,
+        "max_funding_loss": 35,
     }
 }
 
