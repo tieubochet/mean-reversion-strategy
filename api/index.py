@@ -27,7 +27,7 @@ CONFIG_PAIRS = {
         "max_funding_loss": 45,
     },
 
-    # ==================== Cặp mới: XYZ100 vs USTECH ====================
+    # ==================== Cặp mới: SP500 vs US500 ====================
     "SP500_US500": {
         "name_a": "SP500 (A)",
         "symbol_a": "XYZ:SP500",
@@ -35,10 +35,10 @@ CONFIG_PAIRS = {
         "symbol_b": "MKTS:US500",
 
         "mean": 0,
-        "std": 1.0,                    # Nên điều chỉnh sau khi có dữ liệu thực
+        "std": 1.0,
 
-        "long_z_threshold": -1.50,     # Tối ưu theo backtest
-        "short_z_threshold": 1.50,     # Tối ưu theo backtest
+        "long_z_threshold": -1.50,
+        "short_z_threshold": 1.50,
         "exit_z_threshold": 0.40,
 
         "vol_per_leg": 9000,
@@ -60,9 +60,6 @@ def calculate_z_score(spread, mean, std):
 
 
 def get_hyperliquid_data():
-    """
-    Lấy dữ liệu từ nhiều DEX (xyz + mkts)
-    """
     url = "https://api.hyperliquid.xyz/info"
     headers = {"Content-Type": "application/json"}
     prices = {}
