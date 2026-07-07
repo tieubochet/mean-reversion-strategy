@@ -29,7 +29,28 @@ CONFIG_PAIRS = {
         "fee_bps": 0.00022,          # Maker fee 2.2 bps (trade.xyz)
         "min_net_pnl": 20,           # Expected Funding PnL tối thiểu trong 1 lệnh
         "max_funding_loss": 70,      # Chấp nhận lỗ Funding tối đa $45/ngày
+    },
+
+    "XYZ100_QQQ": {
+        "name_a": "XYZ100 (A)",
+        "symbol_a": "XYZ:XYZ100",      # Tokenized index trên Trade[XYZ]
+        "name_b": "QQQ (B)",
+        "symbol_b": "MKTS:QQQ",        # QQQ trên builder MKTS (cần xác nhận ticker chính xác)
+
+        # === CẦN BACKTEST LẠI ===
+        "mean": 0,                     # ← Cần điền giá trị thực tế sau khi backtest
+        "std": 1.9,                    # ← Cần điền giá trị thực tế sau khi backtest
+
+        "long_z_threshold": -1.7,
+        "short_z_threshold": 1.7,
+        "exit_z_threshold": 0.4,
+
+        "vol_per_leg": 14000,          # Có thể chỉnh lại theo vốn
+        "avg_hold_hours": 12,
+        "min_net_pnl": 20,
+        "max_funding_loss": 40,
     }
+
 }
 
 # CẤU HÌNH THÔNG TIN TELEGRAM BẮN ALERT CHỦ ĐỘNG
