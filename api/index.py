@@ -28,17 +28,17 @@ CONFIG_PAIRS = {
     },
 
     # ==================== Cặp mới: XYZ100 vs USTECH ====================
-    "XYZ100_USTECH": {
-        "name_a": "XYZ100 (A)",
-        "symbol_a": "XYZ:XYZ100",
-        "name_b": "USTECH (B)",
-        "symbol_b": "MKTS:USTECH",
+    "SP500_US500": {
+        "name_a": "SP500 (A)",
+        "symbol_a": "XYZ:SP500",
+        "name_b": "US500 (B)",
+        "symbol_b": "MKTS:US500",
 
         "mean": 0,
         "std": 1.85,
 
-        "long_z_threshold": -1.6,
-        "short_z_threshold": 1.6,
+        "long_z_threshold": -1.60,
+        "short_z_threshold": 1.60,
         "exit_z_threshold": 0.35,
 
         "vol_per_leg": 9000,
