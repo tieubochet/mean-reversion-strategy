@@ -19,16 +19,16 @@ CONFIG_PAIRS = {
         "use_zscore": True,
 
         # Khuyến nghị dùng ngưỡng Z-score cân bằng
-        "long_z_threshold": -1.6,   # ~ -1.85 Z (khoảng P8-P10, tín hiệu khá mạnh)
-        "short_z_threshold": 1.6,   # ~ +1.85 Z (khoảng P90-P92)
+        "long_z_threshold": -1.4,   # ~ -1.85 Z (khoảng P8-P10, tín hiệu khá mạnh)
+        "short_z_threshold": 1.4,   # ~ +1.85 Z (khoảng P90-P92)
         "exit_z_threshold": 0.30,    # Thoát khi về gần vùng trung vị
 
         # === QUẢN TRỊ RỦI RO & VỐN ===
         "vol_per_leg": 14000,        # Quy mô vốn $14,000/leg
         "avg_hold_hours": 16.5,      # Thời gian giữ lệnh trung bình (dùng để tính Expected PnL)
         "fee_bps": 0.00022,          # Maker fee 2.2 bps (trade.xyz)
-        "min_net_pnl": 35,           # Expected Funding PnL tối thiểu trong 1 lệnh
-        "max_funding_loss": 45,      # Chấp nhận lỗ Funding tối đa $45/ngày
+        "min_net_pnl": 20,           # Expected Funding PnL tối thiểu trong 1 lệnh
+        "max_funding_loss": 70,      # Chấp nhận lỗ Funding tối đa $45/ngày
     }
 }
 
@@ -142,21 +142,23 @@ def build_check_message(prices, funding_rates):
 
 @app.route("/api", methods=["POST", "GET"])
 @app.route("/api/", methods=["POST", "GET"])  # Chống lỗi 404 khi cronjob tự động thêm dấu / ở cuối
+@app.route("/api", methods=["POST", "GET"])
+@app.route("/api/", methods=["POST", "GET"])
 def scan_bot():
-    """
-    ENDPOINT DÀNH CHO CRON-JOB NGOÀI KÍCH HOẠT MỖI 5 PHÚT HOẶC 15 PHÚT
-    """
     try:
         prices, funding_rates = get_hyperliquid_data()
-        
+
         for pair_key, cfg in CONFIG_PAIRS.items():
             sym_a = cfg["symbol_a"].upper()
             sym_b = cfg["symbol_b"].upper()
+
             price_a = float(prices.get(sym_a, 0))
             price_b = float(prices.get(sym_b, 0))
 
-            if price_a == 0 and sym_a.startswith("XYZ:"): price_a = float(prices.get(sym_a.split(":")[1], 0))
-            if price_b == 0 and sym_b.startswith("XYZ:"): price_b = float(prices.get(sym_b.split(":")[1], 0))
+            if price_a == 0 and sym_a.startswith("XYZ:"):
+                price_a = float(prices.get(sym_a.split(":")[1], 0))
+            if price_b == 0 and sym_b.startswith("XYZ:"):
+                price_b = float(prices.get(sym_b.split(":")[1], 0))
 
             if price_a == 0 or price_b == 0:
                 continue
@@ -164,50 +166,34 @@ def scan_bot():
             spread = price_a - price_b
             z_score = calculate_z_score(spread, cfg["mean"], cfg["std"])
 
-            triggered = False
-            direction = ""
-            side = ""
-            net_usd_day, net_apr = 0, 0
-
             fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
             fb = funding_rates.get(sym_b, funding_rates.get(sym_b.replace("XYZ:", ""), 0))
 
-            # Xác định hướng và tính funding
+            # Xác định hướng
             if z_score <= cfg["long_z_threshold"]:
                 side = "LONG"
+                direction = f"🟢 *VÀO LỆNH LONG SPREAD (M15)*\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
                 net_usd_day, net_apr = calc_net_funding(fa, fb, True, cfg["vol_per_leg"])
-                direction = f"🟢 *VÀO LỆNH LONG SPREAD (Khung m15)*:\n➔ BUY {cfg['name_a']} & SELL {cfg['name_b']}"
             elif z_score >= cfg["short_z_threshold"]:
                 side = "SHORT"
+                direction = f"🔴 *VÀO LỆNH SHORT SPREAD (M15)*\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
                 net_usd_day, net_apr = calc_net_funding(fa, fb, False, cfg["vol_per_leg"])
-                direction = f"🔴 *VÀO LỆNH SHORT SPREAD (Khung m15)*:\n➔ SELL {cfg['name_a']} & BUY {cfg['name_b']}"
             else:
-                continue  # Không đạt ngưỡng Z-score
+                continue  # Chưa đạt ngưỡng Z-score
 
-            # Tính expected funding PnL trong thời gian giữ lệnh trung bình
+            # Tính expected PnL
             avg_hold = cfg.get("avg_hold_hours", 16.5)
             expected_funding_pnl = net_usd_day * (avg_hold / 24)
             min_pnl_req = cfg.get("min_net_pnl", 0)
+            max_loss = cfg.get("max_funding_loss", 999)
 
-            # KIỂM TRA 2 ĐIỀU KIỆN
-            funding_ok = (net_usd_day >= 0) or (abs(net_usd_day) <= cfg.get("max_funding_loss", 999))
+            funding_ok = (net_usd_day >= 0) or (abs(net_usd_day) <= max_loss)
             pnl_ok = expected_funding_pnl >= min_pnl_req
 
-            if funding_ok and pnl_ok:
-                triggered = True
-            else:
-                # LOG CHI TIẾT KHI BỎ QUA
-                if not funding_ok:
-                    print(f"[SKIP - FUNDING] {pair_key} | Z={z_score:+.2f} | Spread={spread:+.2f} | "
-                          f"Side={side} | Funding={net_usd_day:+.2f}$/ngày | "
-                          f"Vượt ngưỡng max_loss ±{cfg.get('max_funding_loss', 0)}$")
-                elif not pnl_ok:
-                    print(f"[SKIP - MIN_PNL] {pair_key} | Z={z_score:+.2f} | Spread={spread:+.2f} | "
-                          f"Side={side} | Expected Funding PnL={expected_funding_pnl:+.2f}$ "
-                          f"< min_net_pnl={min_pnl_req}$ (Hold ~{avg_hold}h)")
+            now = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
 
-            # GỬI ALERT CHỈ KHI ĐẠT CẢ 2 ĐIỀU KIỆN
-            if triggered:
+            if funding_ok and pnl_ok:
+                # === TRƯỜNG HỢP ĐẠT → GỬI TÍN HIỆU ===
                 funding_status_str = (
                     f"✅ Nhận: `{net_usd_day:+.2f}$/ngày`"
                     if net_usd_day >= 0 else
@@ -215,21 +201,44 @@ def scan_bot():
                 )
 
                 alert_msg = (
-                    f"🚨 *TÍN HIỆU MEAN REVERSION KHUNG m15!*\n\n"
+                    f"🚨 *TÍN HIỆU MEAN REVERSION KHUNG M15!*\n\n"
+                    f"🕐 `{now}`\n\n"
                     f"🥇 *{cfg['name_a']} vs {cfg['name_b']}*\n"
-                    f"Spread hiện tại: `${spread:+.2f}`\n"
-                    f"**Z-Score hiện tại: `{z_score:+.2f}`** *(Ngưỡng: {cfg['long_z_threshold']} / {cfg['short_z_threshold']})*\n\n"
+                    f"Spread: `${spread:+.2f}`\n"
+                    f"**Z-Score: `{z_score:+.2f}`** (Ngưỡng: {cfg['long_z_threshold']} / {cfg['short_z_threshold']})\n\n"
                     f"{direction}\n\n"
-                    f"💸 *Trạng thái Funding ước tính (Vốn ${cfg['vol_per_leg']:,}/leg, giữ ~{avg_hold}h)*:\n"
-                    f"  • {funding_status_str}\n"
-                    f"  • Expected Funding PnL: `{expected_funding_pnl:+.2f}$`\n"
-                    f"  • Tỷ suất net APR: `{net_apr:+.1f}%`\n\n"
-                    f"✅ Đã vượt qua 2 điều kiện lọc: Spread + Funding/PnL"
+                    f"💸 *Funding & PnL (Vốn ${cfg['vol_per_leg']:,}/leg)*\n"
+                    f"• {funding_status_str}\n"
+                    f"• Expected Funding PnL ({avg_hold}h): `{expected_funding_pnl:+.2f}$`\n"
+                    f"• APR: `{net_apr:+.1f}%`\n\n"
+                    f"✅ Đã vượt qua Spread + Funding/PnL filter"
                 )
                 send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, alert_msg)
-                
+
+            else:
+                # === TRƯỜNG HỢP BỊ LỌC → VẪN GỬI TELEGRAM ===
+                reasons = []
+                if not funding_ok:
+                    reasons.append(f"Funding quá tiêu cực ({net_usd_day:+.2f}$/ngày > ±{max_loss}$)")
+                if not pnl_ok:
+                    reasons.append(f"Expected PnL thấp ({expected_funding_pnl:+.2f}$ < {min_pnl_req}$)")
+
+                skip_msg = (
+                    f"⚠️ *BỎ QUA TÍN HIỆU (M15)*\n\n"
+                    f"🕐 `{now}`\n\n"
+                    f"🛢 *{cfg['name_a']} vs {cfg['name_b']}*\n"
+                    f"Spread: `${spread:+.2f}`\n"
+                    f"Z-Score: `{z_score:+.2f}`\n"
+                    f"Hướng: {side}\n\n"
+                    f"❌ *Lý do bỏ qua:*\n• " + "\n• ".join(reasons) + "\n\n"
+                    f"💡 Funding: `{net_usd_day:+.2f}$/ngày` | Expected PnL: `{expected_funding_pnl:+.2f}$`"
+                )
+                send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, skip_msg)
+
         return {"status": "success", "message": "Scan completed"}, 200
+
     except Exception as e:
+        print(f"[ERROR] scan_bot: {str(e)}")
         return {"status": "error", "message": str(e)}, 500
 
 @app.route("/api/webhook", methods=["POST"])  # Cập nhật /api/webhook để chạy chuẩn xác trên Vercel
