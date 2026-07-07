@@ -14,6 +14,8 @@ CONFIG_PAIRS = {
         "name_b": "Brent (B)",
         "symbol_b": "XYZ:BRENTOIL",
 
+        "use_percentage_spread": False,   # Dùng chênh lệch tuyệt đối
+
         "mean": -3.80,
         "std": 1.72,
 
@@ -34,11 +36,13 @@ CONFIG_PAIRS = {
         "name_b": "US500 (B)",
         "symbol_b": "MKTS:US500",
 
-        "mean": 0,
-        "std": 1.0,
+        "use_percentage_spread": True,    # ← Dùng Percentage Spread
 
-        "long_z_threshold": -1.50,
-        "short_z_threshold": 1.50,
+        "mean": 0,
+        "std": 0.95,
+
+        "long_z_threshold": -1.65,
+        "short_z_threshold": 1.65,
         "exit_z_threshold": 0.40,
 
         "vol_per_leg": 9000,
@@ -137,7 +141,14 @@ def build_check_message(prices, funding_rates):
             lines.append(f"❌ *{cfg['name_a']} vs {cfg['name_b']}*: Không lấy được giá\n")
             continue
 
-        spread = price_a - price_b
+        # Tính spread theo loại
+        if cfg.get("use_percentage_spread", False):
+            spread = (price_a / price_b - 1) * 100
+            spread_str = f"{spread:+.4f}%"
+        else:
+            spread = price_a - price_b
+            spread_str = f"${spread:+.2f}"
+
         z_score = calculate_z_score(spread, cfg["mean"], cfg["std"])
 
         if z_score <= cfg["long_z_threshold"]:
@@ -160,7 +171,7 @@ def build_check_message(prices, funding_rates):
             f"🛢 *{cfg['name_a']} vs {cfg['name_b']}*\n"
             f"  Giá A (`{sym_a}`): `${price_a:.4f}`\n"
             f"  Giá B (`{sym_b}`): `${price_b:.4f}`\n"
-            f"  Spread: `${spread:+.2f}`\n"
+            f"  Spread: `{spread_str}`\n"
             f"  **Z-Score: `{z_score:+.2f}`**\n"
             f"  Mean: `{cfg['mean']}` | Std: `{cfg['std']}`\n\n"
             f"  📍 *Trạng thái:* {status}\n"
@@ -184,7 +195,12 @@ def process_pair(pair_key, cfg, prices, funding_rates):
     if price_a == 0 or price_b == 0:
         return
 
-    spread = price_a - price_b
+    # Tính spread theo loại
+    if cfg.get("use_percentage_spread", False):
+        spread = (price_a / price_b - 1) * 100
+    else:
+        spread = price_a - price_b
+
     z_score = calculate_z_score(spread, cfg["mean"], cfg["std"])
 
     fa = funding_rates.get(sym_a, funding_rates.get(sym_a.replace("XYZ:", ""), 0))
@@ -221,7 +237,7 @@ def process_pair(pair_key, cfg, prices, funding_rates):
             f"🚨 *TÍN HIỆU MEAN-REVERSION (M15)*\n"
             f"🕐 `{now}`\n\n"
             f"🛢 *{cfg['name_a']} vs {cfg['name_b']}*\n"
-            f"Spread: `${spread:+.2f}`\n"
+            f"Spread: `{spread:+.4f}` {'%' if cfg.get('use_percentage_spread') else '$'}\n"
             f"Z-Score: `{z_score:+.2f}`\n\n"
             f"{direction}\n\n"
             f"💰 *Funding & PnL (Vốn ${cfg['vol_per_leg']:,})*\n"
@@ -243,7 +259,8 @@ def process_pair(pair_key, cfg, prices, funding_rates):
             f"⚠️ *BỎ QUA TÍN HIỆU (M15)*\n"
             f"🕐 `{now}`\n\n"
             f"🛢 *{cfg['name_a']} vs {cfg['name_b']}*\n"
-            f"Spread: `${spread:+.2f}` | Z-Score: `{z_score:+.2f}`\n"
+            f"Spread: `{spread:+.4f}` {'%' if cfg.get('use_percentage_spread') else '$'}\n"
+            f"Z-Score: `{z_score:+.2f}`\n"
             f"Hướng: {side}\n\n"
             f"❌ *Lý do bỏ qua:*\n• " + "\n• ".join(reasons) + "\n\n"
             f"💡 Funding: `{net_usd:+.2f}$/ngày` | Expected PnL: `{expected_pnl:+.2f}$`"
