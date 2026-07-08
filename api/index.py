@@ -14,17 +14,17 @@ CONFIG_PAIRS = {
         "name_b": "Brent (B)",
         "symbol_b": "XYZ:BRENTOIL",
 
-        "mean": -3.80,
-        "std": 1.72,
+        "mean": -3.286,
+        "std": 0.467,
 
-        "long_z_threshold": -1.55,
-        "short_z_threshold": 1.55,
+        "long_z_threshold": -2.5,
+        "short_z_threshold": 2.5,
         "exit_z_threshold": 0.35,
 
-        "vol_per_leg": 14000,
-        "avg_hold_hours": 16.5,
-        "min_net_pnl": 35,
-        "max_funding_loss": 45,
+        "vol_per_leg": 5000,
+        "avg_hold_hours": 587,
+        "min_net_pnl": 300,
+        "max_funding_loss": 40,
     },
 
     # ==================== Cặp mới: SP500 vs US500 ====================
