@@ -30,7 +30,7 @@ HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 
 LEG_A_SYMBOL = "xyz:CL"          # WTI perp
 LEG_B_SYMBOL = "xyz:BRENTOIL"    # Brent perp
-INTERVAL = "1H"
+INTERVAL = "15m"
 LOOKBACK_DAYS = 90                # ~3 tháng
 
 # Hyperliquid giới hạn khoảng ~ 5000 nến / request -> với m15 là ~52 ngày.

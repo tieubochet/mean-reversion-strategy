@@ -22,8 +22,8 @@ CONFIG_PAIRS = {
         "exit_z_threshold": 0.35,
 
         "vol_per_leg": 5000,
-        "avg_hold_hours": 587,
-        "min_net_pnl": 300,
+        "avg_hold_hours": 36,
+        "min_net_pnl": 40,
         "max_funding_loss": 40,
     },
 
