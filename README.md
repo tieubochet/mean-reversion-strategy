@@ -2,7 +2,7 @@
 
 Bot theo dõi z-score của spread WTI-Brent trên Hyperliquid, kiểm tra funding
 rate trước khi báo tín hiệu, và gửi vào Telegram khi đủ điều kiện. Scheduler
-dùng **cron-job.org** gọi endpoint mỗi 5 phút.
+dùng **cron-job.org**, gửi **POST** đến endpoint mỗi 5 phút để quét tín hiệu.
 
 Toàn bộ config + logic gom trong **1 file duy nhất**: `api/index.py`.
 
@@ -103,7 +103,7 @@ git push -u origin main
 
 ### 4. Test thủ công trước khi gắn cron
 ```bash
-curl -H "Authorization: Bearer <CRON_SECRET>" https://your-project.vercel.app/api/index
+curl -X POST -H "Authorization: Bearer <CRON_SECRET>" https://your-project.vercel.app/api/index
 ```
 Kỳ vọng trả về JSON, VD:
 ```json
@@ -114,17 +114,21 @@ hoặc khi z vượt ngưỡng nhưng funding cost quá cao:
 {"z": 1.8, "spread": -2.44, "should_enter": false, "reason": "Funding cost + phí ăn hết lợi nhuận kỳ vọng -> bỏ qua", "net_expected": -12.3}
 ```
 Nếu lỗi 401 → sai `CRON_SECRET`; lỗi 500 → xem message trong JSON (thường do
-thiếu env var hoặc Hyperliquid API đổi format).
+thiếu env var hoặc Hyperliquid API đổi format). Endpoint cũng nhận GET (tiện
+test nhanh bằng trình duyệt), nhưng cron-job.org sẽ dùng POST.
 
 ### 5. Cấu hình cron-job.org
 - Đăng ký/đăng nhập [cron-job.org](https://cron-job.org).
 - **Create cronjob**:
   - **URL**: `https://your-project.vercel.app/api/index`
   - **Schedule**: Every 5 minutes (`*/5 * * * *`)
-  - **Request method**: GET
+  - **Request method**: **POST**
   - **Headers**: `Authorization: Bearer <CRON_SECRET>` (đúng giá trị đã set trên Vercel)
   - **Notifications**: nên bật "notify on failure".
   - Save & Enable.
+
+Mỗi 5 phút cron-job.org POST tới `/api/index`, function quét lại z-score +
+funding cho cặp CL/BRENTOIL và tự quyết định có báo tín hiệu hay không.
 
 ## Giới hạn cần biết
 

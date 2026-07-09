@@ -257,7 +257,9 @@ def build_signal_message(result: dict) -> str:
 # =============================================================================
 
 class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def _handle(self):
+        """Logic dùng chung: cron-job.org gọi bằng POST (mỗi 5 phút quét tín
+        hiệu), GET vẫn để lại cho tiện test thủ công bằng curl/trình duyệt."""
         if CRON_SECRET:
             auth_header = self.headers.get("Authorization", "")
             if auth_header != f"Bearer {CRON_SECRET}":
@@ -290,3 +292,11 @@ class handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def do_POST(self):
+        # cron-job.org ping bằng POST mỗi 5 phút -> đường chính
+        self._handle()
+
+    def do_GET(self):
+        # giữ lại để test thủ công bằng curl/trình duyệt
+        self._handle()
