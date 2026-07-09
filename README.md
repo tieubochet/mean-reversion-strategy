@@ -63,6 +63,7 @@ liên tục) — chỉ gọi thủ công khi bạn cần xem trạng thái.
 | `SPREAD_MEAN` | -3.2858 | Task 2, 52 ngày data |
 | `SPREAD_STD` | 0.4675 | Task 2, 52 ngày data |
 | `SIGNAL_THRESHOLD` | 1.5 | Task 3, winrate 89.3%, 121 trades |
+| `EXIT_Z_THRESHOLD` | 0.0 | khớp quy tắc exit dùng trong backtest (thoát khi spread về đúng Mean) |
 | `EXPECTED_HOLD_DAYS` | 0.264 (~379.7 phút) | Task 3, hold time trung bình threshold=1.5 |
 | `CAPITAL_PER_LEG` | 5000 | đề bài |
 | `FEE_BPS_PER_FILL` | 2.2 | đề bài |
@@ -149,7 +150,19 @@ Telegram mỗi 5 phút dù có tín hiệu hay không.
 
 ## Giới hạn cần biết
 
-- **`/api/index` vẫn stateless** — mỗi lần cron chạy tự đánh giá lại từ đầu,
+- **Bot CHƯA có tín hiệu đóng lệnh tự động.** Cả `/api/index` lẫn `/api/check`
+  chỉ đánh giá "có nên vào lệnh không" mỗi lần chạy, không biết bạn đang có
+  vị thế mở hay không. Tin nhắn tín hiệu (và `/check`) có kèm dòng **"🎯 Gợi ý
+  đóng lệnh"** — mức spread ứng với `EXIT_Z_THRESHOLD` (mặc định z=0, tức khi
+  spread hồi đúng về Mean, giống quy tắc exit trong backtest Task 3) — nhưng
+  đây chỉ là **con số tham khảo tại thời điểm vào lệnh**, không phải cảnh báo
+  tự động khi giá thực sự chạm mức đó. Bạn cần tự theo dõi bằng cách gọi lại
+  `/check` định kỳ, hoặc đặt sẵn take-profit/limit order trên sàn ngay khi
+  vào lệnh.
+  Muốn có thông báo tự động **khi thực sự tới điểm đóng** (không chỉ gợi ý
+  lúc vào lệnh), cần thêm state lưu vị thế đang mở (Vercel KV/Upstash Redis)
+  — báo tôi nếu bạn muốn triển khai tiếp phần này.
+- **`/api/index` vẫn stateless** cho phần vào lệnh — mỗi lần cron chạy tự đánh giá lại từ đầu,
   không nhớ "đã có vị thế đang mở" hay chưa. Nếu điều kiện vào lệnh tiếp tục
   đúng trong nhiều chu kỳ 5 phút liên tiếp, bạn sẽ nhận tín hiệu lặp lại
   nhiều lần. Muốn tránh spam, cần thêm state (Vercel KV hoặc Upstash Redis)

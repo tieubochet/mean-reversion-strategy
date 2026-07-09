@@ -83,6 +83,12 @@ SPREAD_MEAN = float(os.environ.get("SPREAD_MEAN", "-3.2858"))   # Task 2, 52 ng�
 SPREAD_STD = float(os.environ.get("SPREAD_STD", "0.4675"))       # Task 2, 52 ngày data
 SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "1.5"))  # Task 3 backtest
 
+# Ngưỡng z-score gợi ý ĐÓNG lệnh — mặc định 0.0, khớp đúng quy tắc exit dùng
+# trong backtest_pairs.py Task 3 (thoát khi spread hồi về đúng Mean, z=0).
+# Có thể nới ra (VD 0.3) nếu muốn thoát sớm hơn, chấp nhận ăn ít hơn để giảm
+# rủi ro spread không hồi hẳn về mean.
+EXIT_Z_THRESHOLD = float(os.environ.get("EXIT_Z_THRESHOLD", "0.0"))
+
 # --- Thông số vốn / phí, khớp giả định Task 3 ---
 CAPITAL_PER_LEG = float(os.environ.get("CAPITAL_PER_LEG", "5000"))
 FEE_BPS_PER_FILL = float(os.environ.get("FEE_BPS_PER_FILL", "2.2"))
@@ -153,6 +159,22 @@ def compute_zscore() -> dict:
     return {"spread": spread, "z": z, "price_A": price_a, "price_B": price_b}
 
 
+def suggest_exit_level(z: float) -> dict:
+    """Gợi ý mức spread nên đóng lệnh, dựa trên EXIT_Z_THRESHOLD.
+
+    z > 0 (đang Short spread) -> đóng khi z giảm về EXIT_Z_THRESHOLD (spread giảm xuống)
+    z < 0 (đang Long spread)  -> đóng khi z tăng lên -EXIT_Z_THRESHOLD (spread tăng lên)
+    """
+    if z > 0:
+        exit_z = EXIT_Z_THRESHOLD
+    else:
+        exit_z = -EXIT_Z_THRESHOLD
+    exit_z = exit_z if exit_z != 0 else 0.0  # tránh hiển thị -0.00
+
+    exit_spread = SPREAD_MEAN + exit_z * SPREAD_STD
+    return {"exit_z": exit_z, "exit_spread": exit_spread}
+
+
 def estimate_expected_pnl(stats: dict) -> float:
     """Ước tính lợi nhuận gross ($) nếu spread hồi về SPREAD_MEAN, quy đổi
     theo CAPITAL_PER_LEG (cùng công thức barrel-equivalent dùng trong backtest)."""
@@ -217,12 +239,14 @@ def evaluate_signal(force_funding_check: bool = False) -> dict:
     funding = estimate_funding_cost(stats, funding_rates)
     expected_pnl = estimate_expected_pnl(stats)
     net_expected = expected_pnl - FEE_PER_ROUND - funding["total_funding_cost"]
+    exit_level = suggest_exit_level(z)
 
     result.update({
         "expected_pnl": expected_pnl,
         "fee_per_round": FEE_PER_ROUND,
         "funding": funding,
         "net_expected": net_expected,
+        "exit_level": exit_level,
     })
 
     if abs(z) >= SIGNAL_THRESHOLD:
@@ -268,6 +292,7 @@ def build_check_message(result: dict) -> str:
 
     if "net_expected" in result:
         f = result["funding"]
+        ex = result["exit_level"]
         lines += [
             "",
             f"Lợi nhuận kỳ vọng: `${result['expected_pnl']:.2f}`",
@@ -275,6 +300,8 @@ def build_check_message(result: dict) -> str:
             f"Funding/ngày dự kiến: `${f['daily_funding_cost']:.2f}`",
             f"Funding cost ước tính ({EXPECTED_HOLD_DAYS:.2f} ngày): `${f['total_funding_cost']:.2f}`",
             f"*Net kỳ vọng: `${result['net_expected']:.2f}`*",
+            "",
+            f"🎯 Gợi ý đóng lệnh (nếu đang mở): spread về `${ex['exit_spread']:.3f}/bbl` (z ≈ `{ex['exit_z']:.2f}`)",
         ]
 
     if result["should_enter"]:
@@ -291,6 +318,7 @@ def build_signal_message(result: dict) -> str:
         else "🟢 LONG SPREAD (Long xyz:CL / Short xyz:BRENTOIL)"
 
     f = result["funding"]
+    ex = result["exit_level"]
     msg = (
         f"*PAIRS SIGNAL — CL/BRENTOIL*\n"
         f"{direction}\n\n"
@@ -302,7 +330,11 @@ def build_signal_message(result: dict) -> str:
         f"Funding/ngày dự kiến: `${f['daily_funding_cost']:.2f}`\n"
         f"Funding cost ước tính ({EXPECTED_HOLD_DAYS:.2f} ngày hold): `${f['total_funding_cost']:.2f}`\n"
         f"*Net kỳ vọng: `${result['net_expected']:.2f}`*\n\n"
-        f"Giá xyz:CL: `${result['price_A']:.2f}` | Giá xyz:BRENTOIL: `${result['price_B']:.2f}`"
+        f"Giá xyz:CL: `${result['price_A']:.2f}` | Giá xyz:BRENTOIL: `${result['price_B']:.2f}`\n\n"
+        f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `${ex['exit_spread']:.3f}/bbl` "
+        f"(z ≈ `{ex['exit_z']:.2f}`)\n"
+        f"_Bot không tự động báo khi tới điểm đóng — bạn tự theo dõi bằng /check, "
+        f"hoặc đặt take-profit/limit tương ứng ngay khi vào lệnh._"
     )
     return msg
 
@@ -321,6 +353,8 @@ def result_to_json(result: dict) -> dict:
         response["daily_funding_cost"] = round(result["funding"]["daily_funding_cost"], 2)
         response["total_funding_cost"] = round(result["funding"]["total_funding_cost"], 2)
         response["net_expected"] = round(result["net_expected"], 2)
+        response["suggested_exit_z"] = round(result["exit_level"]["exit_z"], 3)
+        response["suggested_exit_spread"] = round(result["exit_level"]["exit_spread"], 4)
     return response
 
 
