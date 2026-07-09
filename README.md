@@ -7,23 +7,25 @@ rate trước khi báo tín hiệu, và gửi vào Telegram khi đủ điều ki
 
 ```
 telegram-pairs-bot/
-├── lib/
-│   ├── __init__.py
-│   └── pairs_bot.py     # TOÀN BỘ logic dùng chung: config, fetch data,
-│                         # tính z-score, tính funding cost, gửi Telegram
 ├── api/
-│   ├── index.py          # POST /api/index — cron-job.org ping mỗi 5 phút,
-│                          #   quét tín hiệu + GỬI Telegram nếu đủ điều kiện
-│   └── check.py           # GET/POST /api/check — quét thủ công bất cứ lúc
-│                           #   nào, CHỈ trả JSON, KHÔNG gửi Telegram
+│   ├── _pairs_bot.py    # TOÀN BỘ logic dùng chung: config, fetch data,
+│   │                     # tính z-score, funding cost, gửi Telegram.
+│   │                     # Tên bắt đầu bằng "_" nên Vercel KHÔNG coi đây
+│   │                     # là 1 route riêng — chỉ dùng để 2 file dưới import.
+│   ├── index.py           # POST /api/index — cron-job.org ping mỗi 5 phút,
+│   │                       #   quét tín hiệu + GỬI Telegram nếu đủ điều kiện
+│   └── check.py            # GET/POST /api/check — quét thủ công bất cứ lúc
+│                            #   nào, LUÔN gửi 1 tin Telegram báo trạng thái
+├── vercel.json           # maxDuration=30s cho 2 function (gọi nhiều API
+│                          # tuần tự tới Hyperliquid, cần hơn mức mặc định)
 ├── requirements.txt
 └── README.md
 ```
 
-Vì mỗi file trong `api/` là 1 route riêng trên Vercel, không thể gộp 2
-endpoint vào 1 file — nên toàn bộ logic dùng chung được gom vào
-`lib/pairs_bot.py`, còn `api/index.py` và `api/check.py` chỉ là 2 wrapper
-mỏng gọi vào đó (không trùng lặp code).
+Module dùng chung `_pairs_bot.py` được đặt **cùng thư mục `api/`** (không phải
+thư mục riêng như `lib/`) — đây là cách an toàn nhất với Vercel Python
+runtime, tránh lỗi bundle chéo thư mục có thể khiến function fail ngay từ
+bước import (trả về lỗi generic, không phải JSON của mình).
 
 ## 2 endpoint — 2 trường hợp gửi Telegram
 
@@ -40,7 +42,7 @@ mà không cần chờ tín hiệu tự động.
 ⚠️ Vì `/check` luôn gửi Telegram, **đừng gắn cron vào `/check`** (sẽ spam
 liên tục) — chỉ gọi thủ công khi bạn cần xem trạng thái.
 
-## Logic báo tín hiệu (trong `lib/pairs_bot.py`, dùng chung cho cả 2 endpoint)
+## Logic báo tín hiệu (trong `_pairs_bot.py`, dùng chung cho cả 2 endpoint)
 
 1. Lấy giá hiện tại của 2 leg → tính spread hiện tại.
 2. So spread với `SPREAD_MEAN` / `SPREAD_STD` **cố định** (không tính lại
@@ -101,7 +103,7 @@ git push -u origin main
 ### 3. Deploy lên Vercel
 - [vercel.com](https://vercel.com) → New Project → import repo GitHub vừa tạo.
 - Vercel tự nhận `api/index.py` và `api/check.py` là 2 Python serverless
-  function riêng biệt (đều import chung `lib/pairs_bot.py`).
+  function riêng biệt (đều import chung `_pairs_bot.py` cùng thư mục `api/`).
 - Vào **Project Settings → Environment Variables**, thêm:
 
   | Key | Value |
@@ -147,6 +149,38 @@ thiếu env var hoặc Hyperliquid API đổi format).
 Không gắn cron vào `/api/check` — endpoint đó gửi Telegram mỗi lần gọi, dành
 cho bạn tự gọi thủ công khi muốn xem trạng thái. Gắn cron vào nó sẽ spam
 Telegram mỗi 5 phút dù có tín hiệu hay không.
+
+## Troubleshooting: gọi endpoint mà không thấy gì trả về
+
+Nếu curl/trình duyệt "treo" hoặc không trả JSON như mong đợi, kiểm tra theo
+thứ tự:
+
+1. **Đã deploy đúng chưa / đúng URL chưa** — mở
+   `https://your-project.vercel.app/api/check` trực tiếp trên trình duyệt,
+   xem có load được trang không (nếu domain sai sẽ ra lỗi 404 rõ ràng).
+2. **Xem Vercel Function Logs** — vào project trên Vercel → tab **Logs** (hoặc
+   **Deployments → [deployment mới nhất] → Functions**), gọi lại endpoint rồi
+   xem log realtime. Đây là cách chẩn đoán nhanh và chính xác nhất, thường
+   hiện rõ traceback nếu là lỗi import/runtime.
+3. **Request bị timeout** — function gọi 2-3 API tới Hyperliquid tuần tự,
+   `vercel.json` đã set `maxDuration: 30` nhưng Hobby plan mặc định có thể
+   giới hạn thấp hơn tuỳ cấu hình tài khoản. Nếu logs cho thấy
+   `FUNCTION_INVOCATION_TIMEOUT` → cân nhắc nâng lên Pro, hoặc kiểm tra
+   Hyperliquid API có đang chậm/rate-limit không.
+4. **Thiếu env var** — nếu thiếu `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`,
+   function vẫn nên trả JSON lỗi rõ ràng (`{"error": "Missing ..."}`), không
+   phải im lặng. Nếu không thấy JSON gì cả (kể cả lỗi), gần như chắc chắn là
+   trường hợp #2 hoặc #3.
+5. **Sai `CRON_SECRET`** → trả về `401 Unauthorized` (có body, không phải im
+   lặng) — nếu bạn dùng curl mà không truyền header `Authorization`, và có
+   set `CRON_SECRET` trên Vercel, sẽ luôn bị chặn ở đây.
+
+Lệnh test chuẩn để loại trừ dần:
+```bash
+curl -v -X POST -H "Authorization: Bearer <CRON_SECRET>" https://your-project.vercel.app/api/check
+```
+Cờ `-v` giúp thấy rõ status code + response headers, phân biệt được "hoàn
+toàn không có response" (timeout/network) với "có response nhưng rỗng/lỗi".
 
 ## Giới hạn cần biết
 
