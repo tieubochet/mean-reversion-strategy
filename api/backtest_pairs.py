@@ -64,15 +64,17 @@ def run_backtest_for_threshold(df: pd.DataFrame, threshold: float) -> dict:
             last_bar = (i == len(df) - 1)
             if exit_now or last_bar:
                 exit_spread = spread
-                # PnL per $1 notional/leg: position * (exit_spread - entry_spread)
+                # PnL per barrel: position * (exit_spread - entry_spread)
                 # (long spread = long A, short B -> profit khi spread tăng)
                 spread_change = exit_spread - entry_spread
-                pnl_per_notional = position * spread_change
-                # Gross $ pnl: mỗi leg có notional CAPITAL_PER_LEG, nhưng spread
-                # tính theo $/bbl -> quy đổi coarse: pnl = pnl_per_notional * (CAPITAL_PER_LEG / entry price ref)
-                # Để đơn giản & minh bạch, ta tính pnl trên cơ sở "1 unit spread move = $1 * (CAPITAL_PER_LEG/avg_price)"
-                # -> dùng barrel-equivalent: units = CAPITAL_PER_LEG / entry_leg_price (xấp xỉ bằng spread base price)
-                gross_pnl = pnl_per_notional * (CAPITAL_PER_LEG / max(abs(entry_spread), 1))
+                pnl_per_barrel = position * spread_change
+                # Số barrel/leg = CAPITAL_PER_LEG / giá tài sản thực lúc vào lệnh
+                # (KHÔNG chia cho giá spread — đó là lỗi cũ khiến gross_pnl bị
+                # thổi phồng ~17 lần, vì giá spread ~$4-5 nhỏ hơn nhiều so với
+                # giá tài sản thực ~$74-79).
+                entry_avg_price = (df.loc[entry_idx, "close_A"] + df.loc[entry_idx, "close_B"]) / 2
+                barrels_per_leg = CAPITAL_PER_LEG / max(entry_avg_price, 1)
+                gross_pnl = pnl_per_barrel * barrels_per_leg
                 hold_bars = i - entry_idx
                 trades.append({
                     "entry_time": df.loc[entry_idx, "timestamp"],

@@ -176,10 +176,16 @@ def suggest_exit_level(z: float) -> dict:
 
 
 def estimate_expected_pnl(stats: dict) -> float:
-    """Ước tính lợi nhuận gross ($) nếu spread hồi về SPREAD_MEAN, quy đổi
-    theo CAPITAL_PER_LEG (cùng công thức barrel-equivalent dùng trong backtest)."""
+    """Ước tính lợi nhuận gross ($) nếu spread hồi về SPREAD_MEAN.
+
+    Số barrel/leg = CAPITAL_PER_LEG / giá trung bình 2 leg (KHÔNG chia cho
+    giá spread — đó là lỗi cũ khiến kết quả bị thổi phồng ~17 lần, vì giá
+    spread (~$4-5) nhỏ hơn nhiều so với giá tài sản thực (~$74-79)).
+    """
+    avg_price = (stats["price_A"] + stats["price_B"]) / 2
+    barrels_per_leg = CAPITAL_PER_LEG / max(avg_price, 1)
     deviation = abs(stats["spread"] - SPREAD_MEAN)
-    return deviation * (CAPITAL_PER_LEG / max(abs(stats["spread"]), 1))
+    return deviation * barrels_per_leg
 
 
 def estimate_funding_cost(stats: dict, funding_rates: dict) -> dict:
