@@ -20,6 +20,7 @@ import os
 import time
 import json
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler
 
 # =============================================================================
@@ -92,12 +93,29 @@ def fetch_funding_rates() -> dict:
 # SIGNAL LOGIC
 # =============================================================================
 
-def compute_zscore() -> dict:
-    price_a = fetch_latest_close(LEG_A_SYMBOL)
-    price_b = fetch_latest_close(LEG_B_SYMBOL)
+def compute_zscore_and_funding() -> dict:
+    """
+    Gọi giá leg A, giá leg B, và funding rate CÙNG LÚC (song song qua thread
+    pool) thay vì tuần tự. /check luôn cần cả 3 (force_funding_check=True),
+    nên không có lý do phải chờ lần lượt từng cái — chạy song song giảm thời
+    gian chờ tối đa từ ~24s (3 lệnh x 8s cộng dồn) xuống còn ~8s (thời gian
+    của lệnh chậm nhất), giúp tránh FUNCTION_INVOCATION_TIMEOUT trên Vercel.
+    """
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fut_a = ex.submit(fetch_latest_close, LEG_A_SYMBOL)
+        fut_b = ex.submit(fetch_latest_close, LEG_B_SYMBOL)
+        fut_funding = ex.submit(fetch_funding_rates)
+
+        price_a = fut_a.result()
+        price_b = fut_b.result()
+        funding_rates = fut_funding.result()
+
     spread = price_a - price_b
     z = (spread - SPREAD_MEAN) / SPREAD_STD if SPREAD_STD > 0 else 0.0
-    return {"spread": spread, "z": z, "price_A": price_a, "price_B": price_b}
+    return {
+        "spread": spread, "z": z, "price_A": price_a, "price_B": price_b,
+        "funding_rates": funding_rates,
+    }
 
 
 def suggest_exit_level(z: float) -> dict:
@@ -135,7 +153,9 @@ def estimate_funding_cost(stats: dict, funding_rates: dict) -> dict:
 
 
 def evaluate_signal(force_funding_check: bool = False) -> dict:
-    stats = compute_zscore()
+    # /check luôn cần funding (force_funding_check=True) nên luôn fetch song
+    # song cả 3 giá trị ngay từ đầu — không có nhánh "chỉ lấy giá rồi thôi".
+    stats = compute_zscore_and_funding()
     z = stats["z"]
 
     result = {
@@ -147,7 +167,7 @@ def evaluate_signal(force_funding_check: bool = False) -> dict:
     if abs(z) < SIGNAL_THRESHOLD and not force_funding_check:
         return result
 
-    funding_rates = fetch_funding_rates()
+    funding_rates = stats["funding_rates"]
     funding = estimate_funding_cost(stats, funding_rates)
     expected_pnl = estimate_expected_pnl(stats)
     net_expected = expected_pnl - FEE_PER_ROUND - funding["total_funding_cost"]

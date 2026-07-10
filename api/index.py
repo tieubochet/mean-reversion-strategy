@@ -34,6 +34,7 @@ import os
 import time
 import json
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler
 
 # =============================================================================
@@ -107,8 +108,14 @@ def fetch_funding_rates() -> dict:
 # =============================================================================
 
 def compute_zscore() -> dict:
-    price_a = fetch_latest_close(LEG_A_SYMBOL)
-    price_b = fetch_latest_close(LEG_B_SYMBOL)
+    # Lấy giá 2 leg song song (thread pool) thay vì tuần tự — giảm thời gian
+    # chờ từ "8s + 8s" xuống còn ~8s (thời gian của lệnh chậm nhất), giúp
+    # /api/index ít có nguy cơ chạm giới hạn duration của Vercel hơn nữa.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_a = ex.submit(fetch_latest_close, LEG_A_SYMBOL)
+        fut_b = ex.submit(fetch_latest_close, LEG_B_SYMBOL)
+        price_a = fut_a.result()
+        price_b = fut_b.result()
     spread = price_a - price_b
     z = (spread - SPREAD_MEAN) / SPREAD_STD if SPREAD_STD > 0 else 0.0
     return {"spread": spread, "z": z, "price_A": price_a, "price_B": price_b}
