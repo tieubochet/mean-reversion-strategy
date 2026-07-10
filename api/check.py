@@ -174,13 +174,14 @@ def evaluate_signal(force_funding_check: bool = False) -> dict:
 # TELEGRAM
 # =============================================================================
 
-def send_telegram_message(text: str):
+def send_telegram_message(text: str) -> dict:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars")
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     r = requests.post(url, json=payload, timeout=10)
     r.raise_for_status()
+    return r.json()
 
 
 def build_check_message(result: dict) -> str:
@@ -254,8 +255,18 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             result = evaluate_signal(force_funding_check=True)
-            send_telegram_message(build_check_message(result))
+            tg_response = send_telegram_message(build_check_message(result))
             response = result_to_json(result)
+
+            # --- DEBUG BLOCK: xoá sau khi xác định xong nguyên nhân ---
+            response["_debug"] = {
+                "chat_id_env_used": TELEGRAM_CHAT_ID,
+                "bot_token_last6": TELEGRAM_BOT_TOKEN[-6:] if TELEGRAM_BOT_TOKEN else None,
+                "telegram_ok": tg_response.get("ok"),
+                "telegram_message_id": tg_response.get("result", {}).get("message_id"),
+                "telegram_chat_delivered_to": tg_response.get("result", {}).get("chat", {}),
+            }
+            # --- END DEBUG BLOCK ---
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
