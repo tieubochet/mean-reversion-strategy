@@ -124,7 +124,7 @@ def main():
     print(f"Saved {len(df)} rows -> spread_data.csv")
 
     stats_table = compute_stats_table(df)
-    with open("spread_stats_table.md", "w") as f:
+    with open("spread_stats_table.md", "w", encoding='utf-8') as f:
         f.write(f"# Spread Stats: {LEG_A_SYMBOL} - {LEG_B_SYMBOL} "
                 f"(m15, {LOOKBACK_DAYS} ngày gần nhất)\n\n")
         f.write(stats_table.to_markdown(index=False))

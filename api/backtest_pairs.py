@@ -126,7 +126,7 @@ def main():
     results_df = pd.DataFrame(results)
 
     results_df.to_csv("backtest_results.csv", index=False)
-    with open("backtest_results_table.md", "w") as f:
+    with open("backtest_results_table.md", "w", encoding='utf-8') as f:
         f.write("# Backtest Pairs Trading: xyz:CL vs xyz:BRENTOIL (m15)\n\n")
         f.write(f"Giả định: ${CAPITAL_PER_LEG:,.0f}/leg, {FEE_BPS_PER_FILL}bps/fill, "
                 f"{FILLS_PER_ROUND} fill/vòng, rolling window={ROLLING_WINDOW} nến\n\n")

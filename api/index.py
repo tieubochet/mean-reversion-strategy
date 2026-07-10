@@ -2,31 +2,33 @@
 =============================================================================
 Endpoint: POST/GET /api/index — PAIRS TRADING SIGNAL BOT (CL vs BRENTOIL)
 =============================================================================
-Dùng cho cron-job.org — ping mỗi 5 phút, quét tín hiệu và GỬI TELEGRAM khi
-đủ điều kiện (should_enter=True).
+1 FILE DUY NHẤT, 1 URL DUY NHẤT, phục vụ CẢ 2 nguồn gọi tới, tự phân biệt
+bằng header của request:
 
-QUAN TRỌNG: file này KHÔNG import từ file .py nào khác trong repo. Vercel
-Python runtime bundle MỖI file trong api/ thành 1 function HOÀN TOÀN ĐỘC LẬP
-— import chéo kiểu "from _pairs_bot import ..." sẽ luôn lỗi
-"ModuleNotFoundError" dù file kia có tồn tại trong repo hay không. Vì vậy
-toàn bộ logic (config, fetch Hyperliquid, tính z-score, funding, Telegram)
-được viết thẳng trong file này. File api/check.py có cùng nội dung logic,
-lặp lại có chủ đích — đây là đánh đổi bắt buộc để tránh lỗi import.
+  A) cron-job.org ping mỗi 5 phút (POST, header "Authorization: Bearer
+     <CRON_SECRET>") -> quét tín hiệu, CHỈ gửi Telegram khi đủ điều kiện vào
+     lệnh (should_enter=True).
 
-LOGIC TỔNG QUAN:
-    1. Lấy giá hiện tại (nến m15 gần nhất) của 2 leg -> tính spread hiện tại.
-    2. So spread với SPREAD_MEAN / SPREAD_STD CỐ ĐỊNH (không tính lại rolling
-       mỗi lần chạy) -> ra z-score.
-    3. Nếu |z| < SIGNAL_THRESHOLD -> should_enter = False, dừng ở đây.
-    4. Nếu |z| >= SIGNAL_THRESHOLD -> tính lợi nhuận kỳ vọng nếu spread hồi
-       mean, tính funding cost dự kiến, trừ phí trade. should_enter = True
-       chỉ khi lợi nhuận kỳ vọng > phí trade + funding cost.
+  B) Telegram tự POST tới đây mỗi khi có tin nhắn mới trong chat (đã đăng ký
+     qua setWebhook, header "X-Telegram-Bot-Api-Secret-Token: <TELEGRAM_
+     WEBHOOK_SECRET>") -> nếu tin nhắn là lệnh "/check", quét tín hiệu và
+     LUÔN trả lời ngay vào đúng chat đó (dù có tín hiệu vào lệnh hay không).
+
+Cách phân biệt: dựa vào có header "X-Telegram-Bot-Api-Secret-Token" hay
+không — chỉ Telegram gửi header này (do mình khai báo secret_token lúc gọi
+setWebhook), cron-job.org không biết gì về header đó.
+
+TẠI SAO GỘP 1 FILE: chỉ có 1 URL để cấu hình cả 2 nơi (cron-job.org VÀ
+Telegram setWebhook đều trỏ về "https://your-project.vercel.app/api/index"),
+và logic quét tín hiệu (evaluate_signal) chỉ viết 1 lần duy nhất, không phải
+lặp lại ở nhiều file như trước.
 
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET, TELEGRAM_WEBHOOK_SECRET,
     SPREAD_MEAN, SPREAD_STD, SIGNAL_THRESHOLD, EXIT_Z_THRESHOLD,
     EXPECTED_HOLD_DAYS, CAPITAL_PER_LEG, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    (tất cả có default hợp lý trong code, không set vẫn chạy được)
+    (tất cả có default hợp lý trong code, không set vẫn chạy được — riêng
+    CRON_SECRET và TELEGRAM_WEBHOOK_SECRET nên set để tránh bị gọi giả mạo)
 =============================================================================
 """
 
@@ -50,6 +52,7 @@ HIP3_DEX = "xyz"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 
 SPREAD_MEAN = float(os.environ.get("SPREAD_MEAN", "-3.2858"))
 SPREAD_STD = float(os.environ.get("SPREAD_STD", "0.4675"))
@@ -103,23 +106,34 @@ def fetch_funding_rates() -> dict:
     return rates
 
 
+def compute_zscore(with_funding: bool) -> dict:
+    """
+    Lấy giá 2 leg (và funding rate, nếu with_funding=True) SONG SONG qua
+    thread pool thay vì tuần tự -> giảm thời gian chờ tối đa từ việc cộng
+    dồn từng lệnh xuống còn ~ thời gian của lệnh chậm nhất. Quan trọng với
+    nhánh Telegram /check (luôn cần funding) để tránh timeout function trên
+    Vercel khi phải chờ nhiều API Hyperliquid liên tiếp.
+    """
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fut_a = ex.submit(fetch_latest_close, LEG_A_SYMBOL)
+        fut_b = ex.submit(fetch_latest_close, LEG_B_SYMBOL)
+        fut_funding = ex.submit(fetch_funding_rates) if with_funding else None
+
+        price_a = fut_a.result()
+        price_b = fut_b.result()
+        funding_rates = fut_funding.result() if fut_funding else None
+
+    spread = price_a - price_b
+    z = (spread - SPREAD_MEAN) / SPREAD_STD if SPREAD_STD > 0 else 0.0
+    return {
+        "spread": spread, "z": z, "price_A": price_a, "price_B": price_b,
+        "funding_rates": funding_rates,
+    }
+
+
 # =============================================================================
 # SIGNAL LOGIC
 # =============================================================================
-
-def compute_zscore() -> dict:
-    # Lấy giá 2 leg song song (thread pool) thay vì tuần tự — giảm thời gian
-    # chờ từ "8s + 8s" xuống còn ~8s (thời gian của lệnh chậm nhất), giúp
-    # /api/index ít có nguy cơ chạm giới hạn duration của Vercel hơn nữa.
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fut_a = ex.submit(fetch_latest_close, LEG_A_SYMBOL)
-        fut_b = ex.submit(fetch_latest_close, LEG_B_SYMBOL)
-        price_a = fut_a.result()
-        price_b = fut_b.result()
-    spread = price_a - price_b
-    z = (spread - SPREAD_MEAN) / SPREAD_STD if SPREAD_STD > 0 else 0.0
-    return {"spread": spread, "z": z, "price_A": price_a, "price_B": price_b}
-
 
 def suggest_exit_level(z: float) -> dict:
     exit_z = EXIT_Z_THRESHOLD if z > 0 else -EXIT_Z_THRESHOLD
@@ -156,7 +170,13 @@ def estimate_funding_cost(stats: dict, funding_rates: dict) -> dict:
 
 
 def evaluate_signal(force_funding_check: bool = False) -> dict:
-    stats = compute_zscore()
+    """
+    force_funding_check=False (nhánh cron /index): nếu |z| chưa tới ngưỡng,
+    dừng ngay sau khi lấy giá — không tốn thêm API call funding.
+    force_funding_check=True (nhánh Telegram /check): luôn lấy funding ngay
+    từ đầu (chạy song song cùng giá) để trả lời đầy đủ mỗi lần được hỏi.
+    """
+    stats = compute_zscore(with_funding=force_funding_check)
     z = stats["z"]
 
     result = {
@@ -168,7 +188,7 @@ def evaluate_signal(force_funding_check: bool = False) -> dict:
     if abs(z) < SIGNAL_THRESHOLD and not force_funding_check:
         return result
 
-    funding_rates = fetch_funding_rates()
+    funding_rates = stats["funding_rates"] or fetch_funding_rates()
     funding = estimate_funding_cost(stats, funding_rates)
     expected_pnl = estimate_expected_pnl(stats)
     net_expected = expected_pnl - FEE_PER_ROUND - funding["total_funding_cost"]
@@ -195,16 +215,20 @@ def evaluate_signal(force_funding_check: bool = False) -> dict:
 # TELEGRAM
 # =============================================================================
 
-def send_telegram_message(text: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars")
+def send_telegram_message(text: str, chat_id: str = None):
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
+    target_chat_id = chat_id or TELEGRAM_CHAT_ID
+    if not target_chat_id:
+        raise RuntimeError("Missing TELEGRAM_CHAT_ID env var")
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": target_chat_id, "text": text, "parse_mode": "Markdown"}
     r = requests.post(url, json=payload, timeout=10)
     r.raise_for_status()
 
 
 def build_signal_message(result: dict) -> str:
+    """Tin nhắn chủ động khi cron phát hiện đủ điều kiện vào lệnh."""
     z = result["z"]
     direction = "🔴 SHORT SPREAD (Short xyz:CL / Long xyz:BRENTOIL)" if z > 0 \
         else "🟢 LONG SPREAD (Long xyz:CL / Short xyz:BRENTOIL)"
@@ -230,6 +254,51 @@ def build_signal_message(result: dict) -> str:
     )
 
 
+def build_check_message(result: dict) -> str:
+    """Tin nhắn trả lời khi user chủ động gõ /check trong Telegram."""
+    z = result["z"]
+    status_icon = "✅" if result["should_enter"] else "⏸"
+
+    lines = [
+        f"*[CHECK] PAIRS STATUS — CL/BRENTOIL*",
+        f"{status_icon} {result['reason']}\n",
+        f"Z-score: `{z:.2f}` (ngưỡng {SIGNAL_THRESHOLD})",
+        f"Spread hiện tại: `${result['spread']:.3f}/bbl`",
+        f"Mean cố định: `${SPREAD_MEAN:.3f}` | Std cố định: `${SPREAD_STD:.3f}`",
+        f"Giá xyz:CL: `${result['price_A']:.2f}` | Giá xyz:BRENTOIL: `${result['price_B']:.2f}`",
+    ]
+
+    if "net_expected" in result:
+        f = result["funding"]
+        ex = result["exit_level"]
+        lines += [
+            "",
+            f"Lợi nhuận kỳ vọng: `${result['expected_pnl']:.2f}`",
+            f"Phí trade: `${result['fee_per_round']:.2f}`",
+            f"Funding/ngày dự kiến: `${f['daily_funding_cost']:.2f}`",
+            f"Funding cost ước tính ({EXPECTED_HOLD_DAYS:.2f} ngày): `${f['total_funding_cost']:.2f}`",
+            f"*Net kỳ vọng: `${result['net_expected']:.2f}`*",
+            "",
+            f"🎯 Gợi ý đóng lệnh (nếu đang mở): spread về `${ex['exit_spread']:.3f}/bbl` (z ≈ `{ex['exit_z']:.2f}`)",
+        ]
+
+    if result["should_enter"]:
+        direction = "🔴 SHORT SPREAD (Short xyz:CL / Long xyz:BRENTOIL)" if z > 0 \
+            else "🟢 LONG SPREAD (Long xyz:CL / Short xyz:BRENTOIL)"
+        lines += ["", f"→ {direction}"]
+
+    return "\n".join(lines)
+
+
+HELP_TEXT = (
+    "*PAIRS BOT — CL/BRENTOIL*\n"
+    "Gõ /check để xem trạng thái z-score, funding cost và gợi ý vào/đóng "
+    "lệnh ngay lúc này.\n"
+    "Tín hiệu tự động (khi đủ điều kiện vào lệnh) sẽ được bot gửi riêng mỗi "
+    "5 phút, không cần bạn phải hỏi."
+)
+
+
 def result_to_json(result: dict) -> dict:
     response = {
         "z": round(result["z"], 3), "spread": round(result["spread"], 4),
@@ -246,10 +315,63 @@ def result_to_json(result: dict) -> dict:
     return response
 
 
-def check_auth(headers) -> bool:
+# =============================================================================
+# REQUEST ROUTING — phân biệt cron-job.org vs Telegram webhook
+# =============================================================================
+
+def is_telegram_request(headers) -> bool:
+    """Chỉ Telegram gửi kèm header này (khai báo lúc gọi setWebhook)."""
+    return "X-Telegram-Bot-Api-Secret-Token" in headers
+
+
+def check_telegram_secret(headers) -> bool:
+    if not TELEGRAM_WEBHOOK_SECRET:
+        return True  # chưa cấu hình secret -> không chặn (không khuyến khích)
+    return headers.get("X-Telegram-Bot-Api-Secret-Token", "") == TELEGRAM_WEBHOOK_SECRET
+
+
+def check_cron_auth(headers) -> bool:
     if not CRON_SECRET:
         return True
     return headers.get("Authorization", "") == f"Bearer {CRON_SECRET}"
+
+
+def handle_telegram_update(body: bytes):
+    """Xử lý 1 Update Telegram (tin nhắn mới) -> trả lời nếu là lệnh /check."""
+    update = json.loads(body or b"{}")
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return  # bỏ qua các loại update khác (channel_post, callback_query...)
+
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    text = (message.get("text") or "").strip()
+
+    # Chỉ phản hồi đúng chat đã cấu hình -> chặn người lạ nhắn bot kích hoạt
+    # quét tín hiệu tốn API quota.
+    if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+        return
+
+    command = text.split()[0].split("@")[0].lower() if text else ""
+
+    if command in ("/start", "/help"):
+        send_telegram_message(HELP_TEXT, chat_id=chat_id)
+    elif command == "/check":
+        result = evaluate_signal(force_funding_check=True)
+        send_telegram_message(build_check_message(result), chat_id=chat_id)
+    elif command:
+        send_telegram_message(
+            "Lệnh không hợp lệ. Gõ /check để xem trạng thái pairs hiện tại.",
+            chat_id=chat_id,
+        )
+    # text rỗng hoặc không phải lệnh -> im lặng, không phản hồi
+
+
+def handle_cron_scan() -> dict:
+    """Quét tín hiệu định kỳ (cron-job.org) -> chỉ gửi Telegram nếu đủ điều kiện."""
+    result = evaluate_signal(force_funding_check=False)
+    if result["should_enter"]:
+        send_telegram_message(build_signal_message(result))
+    return result_to_json(result)
 
 
 # =============================================================================
@@ -257,21 +379,34 @@ def check_auth(headers) -> bool:
 # =============================================================================
 
 class handler(BaseHTTPRequestHandler):
-    def _handle(self):
-        if not check_auth(self.headers):
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+
+        if is_telegram_request(self.headers):
+            # --- Nhánh Telegram webhook ---
+            # Luôn trả 200 cho Telegram (kể cả lỗi xử lý bên trong) để tránh
+            # Telegram RETRY gửi lại cùng 1 Update nhiều lần.
+            if check_telegram_secret(self.headers):
+                try:
+                    handle_telegram_update(body)
+                except Exception:
+                    pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+            return
+
+        # --- Nhánh cron-job.org ---
+        if not check_cron_auth(self.headers):
             self.send_response(401)
             self.end_headers()
             self.wfile.write(b"Unauthorized")
             return
 
         try:
-            result = evaluate_signal()
-
-            if result["should_enter"]:
-                send_telegram_message(build_signal_message(result))
-
-            response = result_to_json(result)
-
+            response = handle_cron_scan()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -282,8 +417,23 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(e)}).encode())
 
-    def do_POST(self):
-        self._handle()
-
     def do_GET(self):
-        self._handle()
+        # Test tay nhanh qua browser/curl -X GET — chạy giống hệt nhánh cron
+        # (không cần giả header Telegram). Vẫn yêu cầu CRON_SECRET nếu có set.
+        if not check_cron_auth(self.headers):
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b"Unauthorized")
+            return
+
+        try:
+            response = handle_cron_scan()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
