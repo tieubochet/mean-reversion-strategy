@@ -319,9 +319,15 @@ def result_to_json(result: dict) -> dict:
 # REQUEST ROUTING — phân biệt cron-job.org vs Telegram webhook
 # =============================================================================
 
-def is_telegram_request(headers) -> bool:
-    """Chỉ Telegram gửi kèm header này (khai báo lúc gọi setWebhook)."""
-    return "X-Telegram-Bot-Api-Secret-Token" in headers
+def is_telegram_update(parsed_body) -> bool:
+    """
+    Nhận diện Telegram bằng CẤU TRÚC JSON body (luôn có field "update_id")
+    thay vì dựa vào header "X-Telegram-Bot-Api-Secret-Token". Lý do đổi: nếu
+    header vì bất kỳ lý do gì (setWebhook thiếu tham số, header bị chặn/đổi
+    tên khi đi qua hạ tầng trung gian...) không tới được code, nhận diện qua
+    body vẫn hoạt động đúng — không có single point of failure ở 1 header.
+    """
+    return isinstance(parsed_body, dict) and "update_id" in parsed_body
 
 
 def check_telegram_secret(headers) -> bool:
@@ -336,9 +342,8 @@ def check_cron_auth(headers) -> bool:
     return headers.get("Authorization", "") == f"Bearer {CRON_SECRET}"
 
 
-def handle_telegram_update(body: bytes):
+def handle_telegram_update(update: dict):
     """Xử lý 1 Update Telegram (tin nhắn mới) -> trả lời nếu là lệnh /check."""
-    update = json.loads(body or b"{}")
     message = update.get("message") or update.get("edited_message")
     if not message:
         return  # bỏ qua các loại update khác (channel_post, callback_query...)
@@ -383,13 +388,19 @@ class handler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length else b""
 
-        if is_telegram_request(self.headers):
+        try:
+            parsed_body = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            parsed_body = {}
+
+        if is_telegram_update(parsed_body):
             # --- Nhánh Telegram webhook ---
-            # Luôn trả 200 cho Telegram (kể cả lỗi xử lý bên trong) để tránh
-            # Telegram RETRY gửi lại cùng 1 Update nhiều lần.
+            # Luôn trả 200 cho Telegram (kể cả lỗi xử lý bên trong, kể cả
+            # sai secret) để tránh Telegram RETRY gửi lại cùng 1 Update
+            # nhiều lần — pending_update_count sẽ dồn lại nếu không làm vậy.
             if check_telegram_secret(self.headers):
                 try:
-                    handle_telegram_update(body)
+                    handle_telegram_update(parsed_body)
                 except Exception:
                     pass
             self.send_response(200)
