@@ -1,27 +1,27 @@
 """
 =============================================================================
-Endpoint: POST/GET /api/index — PAIRS TRADING SIGNAL BOT (CL vs BRENTOIL)
+Pairs Trading Signal Bot — WTI (xyz:CL) vs Brent (xyz:BRENTOIL)
 =============================================================================
-1 FILE DUY NHẤT, 1 URL DUY NHẤT, phục vụ CẢ 2 nguồn gọi tới, tự phân biệt
-bằng header của request:
+1 FILE Flask app duy nhất, 2 ROUTE nội bộ — đúng kiến trúc gốc đã chạy ổn
+định trước đây, khác với bản BaseHTTPRequestHandler + tự đoán nguồn request
+(gây lỗi 401 do phụ thuộc header không đáng tin cậy).
 
-  A) cron-job.org ping mỗi 5 phút (POST, header "Authorization: Bearer
-     <CRON_SECRET>") -> quét tín hiệu, CHỈ gửi Telegram khi đủ điều kiện vào
-     lệnh (should_enter=True).
+    GET/POST /api          -> cron-job.org ping mỗi 5 phút, quét tín hiệu,
+                               CHỈ gửi Telegram khi đủ điều kiện vào lệnh.
+    POST     /api/webhook  -> Telegram tự gọi mỗi khi có tin nhắn mới trong
+                               chat. Nếu là lệnh "/check", LUÔN quét và trả
+                               lời ngay vào đúng chat đó.
 
-  B) Telegram tự POST tới đây mỗi khi có tin nhắn mới trong chat (đã đăng ký
-     qua setWebhook, header "X-Telegram-Bot-Api-Secret-Token: <TELEGRAM_
-     WEBHOOK_SECRET>") -> nếu tin nhắn là lệnh "/check", quét tín hiệu và
-     LUÔN trả lời ngay vào đúng chat đó (dù có tín hiệu vào lệnh hay không).
+Vì Flask nhận đúng request.path thật (/api hay /api/webhook) từ chính URL
+người gọi, không cần code tự soi header/body để đoán nguồn — loại bỏ hẳn lớp
+lỗi định tuyến sai đã gặp ở bản trước.
 
-Cách phân biệt: dựa vào có header "X-Telegram-Bot-Api-Secret-Token" hay
-không — chỉ Telegram gửi header này (do mình khai báo secret_token lúc gọi
-setWebhook), cron-job.org không biết gì về header đó.
-
-TẠI SAO GỘP 1 FILE: chỉ có 1 URL để cấu hình cả 2 nơi (cron-job.org VÀ
-Telegram setWebhook đều trỏ về "https://your-project.vercel.app/api/index"),
-và logic quét tín hiệu (evaluate_signal) chỉ viết 1 lần duy nhất, không phải
-lặp lại ở nhiều file như trước.
+QUAN TRỌNG VỀ VERCEL ROUTING: mặc định Vercel chỉ map file này vào đúng
+"/api/index" (theo tên file). Muốn Flask nhận được cả "/api" và
+"/api/webhook", BẮT BUỘC phải có "vercel.json" với "rewrites" trỏ 2 URL đó
+về "/api/index" — xem file vercel.json đi kèm. Thiếu rewrites, Flask sẽ
+không bao giờ nhận được request tại "/api" hay "/api/webhook" (404 từ chính
+Vercel, trước khi kịp tới code Python).
 
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET, TELEGRAM_WEBHOOK_SECRET,
@@ -34,10 +34,11 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
 
 import os
 import time
-import json
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 # =============================================================================
 # CONFIG
@@ -107,13 +108,8 @@ def fetch_funding_rates() -> dict:
 
 
 def compute_zscore(with_funding: bool) -> dict:
-    """
-    Lấy giá 2 leg (và funding rate, nếu with_funding=True) SONG SONG qua
-    thread pool thay vì tuần tự -> giảm thời gian chờ tối đa từ việc cộng
-    dồn từng lệnh xuống còn ~ thời gian của lệnh chậm nhất. Quan trọng với
-    nhánh Telegram /check (luôn cần funding) để tránh timeout function trên
-    Vercel khi phải chờ nhiều API Hyperliquid liên tiếp.
-    """
+    """Lấy giá 2 leg (và funding, nếu cần) SONG SONG qua thread pool thay vì
+    tuần tự -> giảm thời gian chờ tối đa, tránh timeout function trên Vercel."""
     with ThreadPoolExecutor(max_workers=3) as ex:
         fut_a = ex.submit(fetch_latest_close, LEG_A_SYMBOL)
         fut_b = ex.submit(fetch_latest_close, LEG_B_SYMBOL)
@@ -171,7 +167,7 @@ def estimate_funding_cost(stats: dict, funding_rates: dict) -> dict:
 
 def evaluate_signal(force_funding_check: bool = False) -> dict:
     """
-    force_funding_check=False (nhánh cron /index): nếu |z| chưa tới ngưỡng,
+    force_funding_check=False (nhánh cron /api): nếu |z| chưa tới ngưỡng,
     dừng ngay sau khi lấy giá — không tốn thêm API call funding.
     force_funding_check=True (nhánh Telegram /check): luôn lấy funding ngay
     từ đầu (chạy song song cùng giá) để trả lời đầy đủ mỗi lần được hỏi.
@@ -216,15 +212,19 @@ def evaluate_signal(force_funding_check: bool = False) -> dict:
 # =============================================================================
 
 def send_telegram_message(text: str, chat_id: str = None):
-    if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
     target_chat_id = chat_id or TELEGRAM_CHAT_ID
-    if not target_chat_id:
-        raise RuntimeError("Missing TELEGRAM_CHAT_ID env var")
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": target_chat_id, "text": text, "parse_mode": "Markdown"}
-    r = requests.post(url, json=payload, timeout=10)
-    r.raise_for_status()
+    if not TELEGRAM_BOT_TOKEN or not target_chat_id:
+        print(f"[TG] Missing token/chat_id, would have sent: {text}")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(
+            url,
+            json={"chat_id": target_chat_id, "text": text, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[ERROR] Gửi Telegram thất bại: {e}")
 
 
 def build_signal_message(result: dict) -> str:
@@ -315,136 +315,80 @@ def result_to_json(result: dict) -> dict:
     return response
 
 
-# =============================================================================
-# REQUEST ROUTING — phân biệt cron-job.org vs Telegram webhook
-# =============================================================================
-
-def is_telegram_update(parsed_body) -> bool:
-    """
-    Nhận diện Telegram bằng CẤU TRÚC JSON body (luôn có field "update_id")
-    thay vì dựa vào header "X-Telegram-Bot-Api-Secret-Token". Lý do đổi: nếu
-    header vì bất kỳ lý do gì (setWebhook thiếu tham số, header bị chặn/đổi
-    tên khi đi qua hạ tầng trung gian...) không tới được code, nhận diện qua
-    body vẫn hoạt động đúng — không có single point of failure ở 1 header.
-    """
-    return isinstance(parsed_body, dict) and "update_id" in parsed_body
-
-
-def check_telegram_secret(headers) -> bool:
-    if not TELEGRAM_WEBHOOK_SECRET:
-        return True  # chưa cấu hình secret -> không chặn (không khuyến khích)
-    return headers.get("X-Telegram-Bot-Api-Secret-Token", "") == TELEGRAM_WEBHOOK_SECRET
-
-
-def check_cron_auth(headers) -> bool:
+def check_cron_auth() -> bool:
     if not CRON_SECRET:
         return True
-    return headers.get("Authorization", "") == f"Bearer {CRON_SECRET}"
+    return request.headers.get("Authorization", "") == f"Bearer {CRON_SECRET}"
 
 
-def handle_telegram_update(update: dict):
-    """Xử lý 1 Update Telegram (tin nhắn mới) -> trả lời nếu là lệnh /check."""
+def check_telegram_secret() -> bool:
+    if not TELEGRAM_WEBHOOK_SECRET:
+        return True  # chưa cấu hình secret -> không chặn (không khuyến khích)
+    return request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") == TELEGRAM_WEBHOOK_SECRET
+
+
+# =============================================================================
+# ROUTE 1: /api — cron-job.org, quét định kỳ
+# =============================================================================
+
+@app.route("/api", methods=["GET", "POST"])
+def scan_bot():
+    if not check_cron_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        result = evaluate_signal(force_funding_check=False)
+        if result["should_enter"]:
+            send_telegram_message(build_signal_message(result))
+        return jsonify(result_to_json(result)), 200
+    except Exception as e:
+        print(f"[ERROR] scan_bot: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# ROUTE 2: /api/webhook — Telegram tự gọi khi có tin nhắn mới
+# =============================================================================
+
+@app.route("/api/webhook", methods=["POST"])
+def telegram_webhook():
+    # Luôn trả 200 cho Telegram (kể cả sai secret/lỗi xử lý) để tránh
+    # Telegram RETRY gửi lại cùng 1 Update nhiều lần.
+    if not check_telegram_secret():
+        return jsonify({"ok": True}), 200
+
+    update = request.get_json(silent=True)
+    if not update:
+        return jsonify({"ok": True}), 200
+
     message = update.get("message") or update.get("edited_message")
     if not message:
-        return  # bỏ qua các loại update khác (channel_post, callback_query...)
+        return jsonify({"ok": True}), 200
 
     chat_id = str(message.get("chat", {}).get("id", ""))
     text = (message.get("text") or "").strip()
 
-    # Chỉ phản hồi đúng chat đã cấu hình -> chặn người lạ nhắn bot kích hoạt
-    # quét tín hiệu tốn API quota.
+    # Chỉ phản hồi đúng chat đã cấu hình -> chặn người lạ nhắn bot.
     if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
-        return
+        return jsonify({"ok": True}), 200
 
     command = text.split()[0].split("@")[0].lower() if text else ""
 
-    if command in ("/start", "/help"):
-        send_telegram_message(HELP_TEXT, chat_id=chat_id)
-    elif command == "/check":
-        result = evaluate_signal(force_funding_check=True)
-        send_telegram_message(build_check_message(result), chat_id=chat_id)
-    elif command:
-        send_telegram_message(
-            "Lệnh không hợp lệ. Gõ /check để xem trạng thái pairs hiện tại.",
-            chat_id=chat_id,
-        )
-    # text rỗng hoặc không phải lệnh -> im lặng, không phản hồi
+    try:
+        if command in ("/start", "/help"):
+            send_telegram_message(HELP_TEXT, chat_id=chat_id)
+        elif command == "/check":
+            result = evaluate_signal(force_funding_check=True)
+            send_telegram_message(build_check_message(result), chat_id=chat_id)
+        elif command:
+            send_telegram_message(
+                "Lệnh không hợp lệ. Gõ /check để xem trạng thái pairs hiện tại.",
+                chat_id=chat_id,
+            )
+    except Exception as e:
+        send_telegram_message(f"❌ Lỗi: {e}", chat_id=chat_id)
+
+    return jsonify({"ok": True}), 200
 
 
-def handle_cron_scan() -> dict:
-    """Quét tín hiệu định kỳ (cron-job.org) -> chỉ gửi Telegram nếu đủ điều kiện."""
-    result = evaluate_signal(force_funding_check=False)
-    if result["should_enter"]:
-        send_telegram_message(build_signal_message(result))
-    return result_to_json(result)
-
-
-# =============================================================================
-# HTTP HANDLER (Vercel entrypoint)
-# =============================================================================
-
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length) if content_length else b""
-
-        try:
-            parsed_body = json.loads(body) if body else {}
-        except json.JSONDecodeError:
-            parsed_body = {}
-
-        if is_telegram_update(parsed_body):
-            # --- Nhánh Telegram webhook ---
-            # Luôn trả 200 cho Telegram (kể cả lỗi xử lý bên trong, kể cả
-            # sai secret) để tránh Telegram RETRY gửi lại cùng 1 Update
-            # nhiều lần — pending_update_count sẽ dồn lại nếu không làm vậy.
-            if check_telegram_secret(self.headers):
-                try:
-                    handle_telegram_update(parsed_body)
-                except Exception:
-                    pass
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"ok": true}')
-            return
-
-        # --- Nhánh cron-job.org ---
-        if not check_cron_auth(self.headers):
-            self.send_response(401)
-            self.end_headers()
-            self.wfile.write(b"Unauthorized")
-            return
-
-        try:
-            response = handle_cron_scan()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response).encode())
-        except Exception as e:
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
-
-    def do_GET(self):
-        # Test tay nhanh qua browser/curl -X GET — chạy giống hệt nhánh cron
-        # (không cần giả header Telegram). Vẫn yêu cầu CRON_SECRET nếu có set.
-        if not check_cron_auth(self.headers):
-            self.send_response(401)
-            self.end_headers()
-            self.wfile.write(b"Unauthorized")
-            return
-
-        try:
-            response = handle_cron_scan()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response).encode())
-        except Exception as e:
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
