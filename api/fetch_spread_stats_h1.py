@@ -1,21 +1,25 @@
 """
-Task 2: Lấy dữ liệu nến m15, 3 tháng gần nhất cho xyz:CL (WTI) và xyz:BRENTOIL (Brent)
-trên Hyperliquid, tính spread ($/bbl) và xuất bảng thống kê.
+Task 2 (bản 1H, 3 tháng): Lấy dữ liệu nến 1H, 3 tháng gần nhất cho xyz:CL
+(WTI) và xyz:BRENTOIL (Brent) trên Hyperliquid, tính spread ($/bbl) và xuất
+bảng thống kê.
 
 Cách chạy:
     pip install requests pandas numpy
-    python fetch_spread_stats.py
+    python fetch_spread_stats_h1.py
 
 Output:
-    - spread_data.csv       : toàn bộ dữ liệu nến A/B + spread theo thời gian
-    - spread_stats_table.md : bảng thống kê (Mean/std/p10/p50/p90/min/max)
+    - spread_data_h1.csv       : toàn bộ dữ liệu nến A/B + spread theo thời gian
+    - spread_stats_table_h1.md : bảng thống kê (Mean/std/p10/p50/p90/min/max)
 
 Ghi chú kỹ thuật:
     - Hyperliquid API endpoint: POST https://api.hyperliquid.xyz/info
-      body: {"type": "candleSnapshot", "req": {"coin": <symbol>, "interval": "15m",
+      body: {"type": "candleSnapshot", "req": {"coin": <symbol>, "interval": "1h",
              "startTime": <ms>, "endTime": <ms>}}
-    - API thường giới hạn số nến trả về mỗi request (thường ~5000), nên script
-      tự động chia nhỏ khoảng thời gian 3 tháng thành nhiều request và ghép lại.
+    - API thường giới hạn số nến trả về mỗi request (thường ~5000 nến). Với
+      nến 1H, 3 tháng (~90 ngày) chỉ ~2,160 nến -> nằm gọn trong 1 request,
+      không cần chia nhỏ nhiều lần như bản m15 (m15 90 ngày ~8,640 nến nên
+      phải chia block 45 ngày). Vẫn giữ cấu trúc chia CHUNK_DAYS để code an
+      toàn nếu sau này tăng LOOKBACK_DAYS lên nhiều hơn.
     - HIP-3 symbols (xyz:CL, xyz:BRENTOIL) không xuất hiện trong allMids, phải
       dùng đúng candleSnapshot với coin="xyz:CL" / "xyz:BRENTOIL".
 """
@@ -30,12 +34,13 @@ HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 
 LEG_A_SYMBOL = "xyz:CL"          # WTI perp
 LEG_B_SYMBOL = "xyz:BRENTOIL"    # Brent perp
-INTERVAL = "15m"
-LOOKBACK_DAYS = 90                # ~3 tháng
+INTERVAL = "1h"
+LOOKBACK_DAYS = 90                 # ~3 tháng
 
-# Hyperliquid giới hạn khoảng ~ 5000 nến / request -> với m15 là ~52 ngày.
-# Chia theo block 45 ngày cho an toàn.
-CHUNK_DAYS = 45
+# Hyperliquid giới hạn khoảng ~5000 nến/request -> với 1h là ~208 ngày/request.
+# 90 ngày nằm gọn trong 1 chunk, nhưng vẫn đặt CHUNK_DAYS < giới hạn để có
+# biên an toàn (tránh sát ngưỡng nếu Hyperliquid đổi giới hạn).
+CHUNK_DAYS = 90
 
 
 def fetch_candles(coin: str, start_ms: int, end_ms: int) -> list:
@@ -120,15 +125,15 @@ def compute_stats_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     df = build_spread_dataframe()
-    df.to_csv("spread_data.csv", index=False)
-    print(f"Saved {len(df)} rows -> spread_data.csv")
+    df.to_csv("spread_data_h1.csv", index=False)
+    print(f"Saved {len(df)} rows -> spread_data_h1.csv")
 
     stats_table = compute_stats_table(df)
-    with open("spread_stats_table.md", "w", encoding="utf-8") as f:
+    with open("spread_stats_table_h1.md", "w", encoding="utf-8") as f:
         f.write(f"# Spread Stats: {LEG_A_SYMBOL} - {LEG_B_SYMBOL} "
-                f"(m15, {LOOKBACK_DAYS} ngày gần nhất)\n\n")
+                f"({INTERVAL}, {LOOKBACK_DAYS} ngày gần nhất)\n\n")
         f.write(stats_table.to_markdown(index=False))
-    print("Saved -> spread_stats_table.md")
+    print("Saved -> spread_stats_table_h1.md")
     print(stats_table.to_string(index=False))
 
 
