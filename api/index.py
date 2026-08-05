@@ -61,7 +61,7 @@ FILLS_PER_ROUND = int(os.environ.get("FILLS_PER_ROUND", "4"))
 
 
 # =============================================================================
-# CẤU HÌNH TỪNG CẶP (PAIRS)
+# CẤU HÌNH TỪNG CẶP (PAIRS) hehe
 # =============================================================================
 
 def _pair_env(key: str, suffix: str, default: str) -> str:
