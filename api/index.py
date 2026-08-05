@@ -80,7 +80,7 @@ PAIRS = [
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(379.7 / 60 / 24))),
-        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "9000")),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
         "id": "xyz100",
