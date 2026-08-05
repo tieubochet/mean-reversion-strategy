@@ -414,6 +414,8 @@ def scan_bot():
 # =============================================================================
 
 @app.route("/api/webhook", methods=["POST"])
+@app.route("/webhook", methods=["POST"])     # <--- THÊM DÒNG NÀY
+@app.route("/", methods=["POST"])            # <--- THÊM DÒNG NÀY (dự phòng)
 def telegram_webhook():
     # Luôn trả 200 cho Telegram (kể cả sai secret/lỗi xử lý) để tránh
     # Telegram RETRY gửi lại cùng 1 Update nhiều lần.
