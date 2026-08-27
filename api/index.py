@@ -118,10 +118,10 @@ PAIRS = [
         # động nhanh, trade quá dày). Chọn 3.0: net PnL $163.08, net/trade
         # $5.62, 29 trades/90 ngày -> mẫu tạm đủ tin cậy. Ngưỡng 3.5 net/trade
         # cao hơn ($9.92) nhưng chỉ 19 trades -> mẫu quá mỏng để ưu tiên mặc định.
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "3.0")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "2.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
-        # Task 3, hold trung bình threshold=3.0: 839 phút -> 839/60/24 ngày
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(839 / 60 / 24))),
+        # Task 3, hold trung bình threshold=2.5: 798 phút -> 798/60/24 ngày
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(798 / 60 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
 ]
