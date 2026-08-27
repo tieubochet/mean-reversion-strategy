@@ -81,8 +81,44 @@ tránh timeout function trên Vercel — quan trọng nhất ở `/check` vì lu
 | `FEE_BPS_PER_FILL` | 2.2 | đề bài |
 | `FILLS_PER_ROUND` | 4 | đề bài |
 
-Tất cả override được qua Environment Variables trên Vercel, không cần sửa
-code hay redeploy.
+## Cặp Gold/Silver
+
+Cặp thứ 3 (`goldsilver`) đã có trong `PAIRS` (`index.py`), dùng
+spread = `ln(Gold/Silver)` (log-ratio, giống XYZ100/SP500) vì giá vàng
+(~$4,000-5,000/oz) và bạc (~$100/oz) lệch scale quá xa để trừ trực tiếp như
+CL/BRENTOIL. Đây là "gold/silver ratio" — 1 trade mean-reversion kinh điển
+trong tài chính truyền thống.
+
+**Thông số đã chốt từ backtest 90 ngày, m15 (`xyz:GOLD` vs `xyz:SILVER`):**
+
+| Env var | Giá trị mặc định | Nguồn |
+|---|---|---|
+| `SPREAD_MEAN_GOLDSILVER` | 4.23056 | 90 ngày data (ln ratio) |
+| `SPREAD_STD_GOLDSILVER` | 0.020552 | 90 ngày data (ln ratio) |
+| `SIGNAL_THRESHOLD_GOLDSILVER` | 3.0 | net PnL $163.08, net/trade $5.62, 29 trades |
+| `EXIT_Z_THRESHOLD_GOLDSILVER` | 0.0 | khớp exit dùng trong backtest |
+| `EXPECTED_HOLD_DAYS_GOLDSILVER` | 0.583 (~839 phút) | hold trung bình threshold=3.0 |
+
+⚠️ **Lưu ý quan trọng từ kết quả backtest:**
+- **Ngưỡng z 1.0-2.0 đều LỖ RÒNG** (spread ln-ratio rất "chặt", std chỉ
+  0.0206 → z-score dao động nhanh → trade quá dày → phí ăn hết lợi nhuận
+  từng trade nhỏ). Chỉ từ ngưỡng **2.5 trở lên mới có lãi**.
+- Ngưỡng 3.5 cho net/trade cao hơn (~$9.92) nhưng mẫu chỉ **19 trades/90
+  ngày** — quá mỏng để làm mặc định, nên đã chọn 3.0 (29 trades) làm cân
+  bằng giữa lợi nhuận và độ tin cậy mẫu. Có thể đổi sang 3.5 qua
+  `SIGNAL_THRESHOLD_GOLDSILVER=3.5` nếu muốn ưu tiên edge/trade cao hơn.
+- Giống mọi log-ratio pair khác (xyz100), PnL kỳ vọng tính theo mô hình
+  dollar-neutral, giả định hedge $ 1:1 chỉ đúng tại thời điểm entry, không
+  re-hedge trong lúc giữ lệnh — sai số này chưa được backtest mô phỏng.
+- Backtest chưa cộng funding rate lịch sử — theo dõi 2-4 tuần đầu bằng
+  `/check goldsilver` trước khi tăng size.
+
+**Nếu cần recalibrate lại sau này:**
+```bash
+python fetch_spread_stats_goldsilver.py   # ra Mean/Std mới
+python backtest_pairs_goldsilver.py       # ra Threshold + Hold time mới
+```
+rồi update lại 4 env var ở trên trên Vercel — không cần redeploy.
 
 ## Recalibrate hàng tuần
 
@@ -237,3 +273,13 @@ curl -v -X POST -H "Authorization: Bearer <CRON_SECRET>" https://your-project.ve
   **không tính funding rate lịch sử lẫn slippage** — kết quả live thực tế
   nhiều khả năng khác so với số backtest. Nên theo dõi sát 2-4 tuần đầu
   trước khi tăng size.
+- **Cặp `goldsilver` chỉ có lãi ròng ở ngưỡng z >= 2.5** (ngưỡng thấp hơn lỗ
+  vì spread rất "chặt", phí ăn hết lợi nhuận). Mặc định đang set threshold=3.0
+  (29 trades/90 ngày) — xem mục "Cặp Gold/Silver" phía trên để biết chi tiết
+  và cách đổi sang ngưỡng khác.
+- Với **mọi log-ratio pair** (xyz100, goldsilver): PnL kỳ vọng tính theo mô
+  hình dollar-neutral (`capital_per_leg * Δln(A/B)`), giả định hedge đúng tỷ
+  trọng $ ở 2 leg tại thời điểm vào lệnh — nếu giá biến động mạnh trong lúc
+  hold, tỷ trọng $ thực tế lệch dần khỏi 1:1, sai số này KHÔNG được backtest
+  mô phỏng (backtest chỉ re-hedge tại điểm entry, không re-hedge trong lúc
+  giữ lệnh).

@@ -18,6 +18,10 @@ CẶP ĐANG THEO DÕI:
     1. cl        — xyz:CL (WTI) vs xyz:BRENTOIL   — spread = price_A - price_B ($/bbl)
     2. xyz100    — xyz:XYZ100 vs xyz:SP500        — spread = ln(price_A / price_B)
                    (log-ratio, vì 2 chỉ số có scale giá khác xa nhau)
+    3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
+                   (log-ratio "gold/silver ratio" kinh điển, vàng ~$4-5k/oz vs
+                   bạc ~$100/oz lệch scale rất xa, KHÔNG dùng hiệu số $ được.
+                   Đã backtest 90 ngày, m15 — xem README mục cảnh báo mẫu.)
 
 QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites" trỏ
 "/api" và "/api/webhook" về "/api/index", nếu không sẽ bị 404 ở tầng Vercel.
@@ -25,12 +29,16 @@ QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    Theo từng cặp (suffix _CL hoặc _XYZ100), tất cả có default hợp lý:
+    Theo từng cặp (suffix _CL, _XYZ100 hoặc _GOLDSILVER), tất cả có default hợp lý:
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
            EXIT_Z_THRESHOLD_<X>, EXPECTED_HOLD_DAYS_<X>, CAPITAL_PER_LEG_<X>
 
 ⚠️ CẶP xyz100/SP500 MỚI, MẪU BACKTEST NHỎ (9 trades, ~53 ngày data, CHƯA
    cộng funding rate lịch sử vào PnL backtest) — xem README mục cảnh báo.
+⚠️ CẶP goldsilver: backtest 90 ngày cho thấy chỉ NGƯỠNG >= 2.5 mới có lãi
+   ròng (ngưỡng thấp hơn lỗ vì spread rất "chặt" -> phí ăn hết lợi nhuận).
+   Mặc định threshold=3.0 nhưng mẫu chỉ 29 trades/90 ngày -> theo dõi sát
+   trước khi tăng size, xem README mục "Thêm cặp Gold/Silver".
 =============================================================================
 """
 
@@ -95,6 +103,26 @@ PAIRS = [
         # hold trung bình backtest ~45-67h -> lấy điểm giữa ~56h
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(56 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XYZ100", "5000")),
+    },
+    {
+        "id": "goldsilver",
+        "label": "GOLD/SILVER",
+        "symbol_a": "xyz:GOLD",
+        "symbol_b": "xyz:SILVER",
+        "spread_type": "logratio",          # spread = ln(price_A / price_B)
+        # Task 2, 90 ngày data (m15) -> spread_stats_table_goldsilver.md
+        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.23056")),
+        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.020552")),
+        # Task 3 -> backtest_results_table_goldsilver.md. Ngưỡng 2.5-3.5 mới
+        # có lãi (1.0-2.0 lỗ ròng, phí ăn hết vì std spread rất nhỏ -> z dao
+        # động nhanh, trade quá dày). Chọn 3.0: net PnL $163.08, net/trade
+        # $5.62, 29 trades/90 ngày -> mẫu tạm đủ tin cậy. Ngưỡng 3.5 net/trade
+        # cao hơn ($9.92) nhưng chỉ 19 trades -> mẫu quá mỏng để ưu tiên mặc định.
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "3.0")),
+        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
+        # Task 3, hold trung bình threshold=3.0: 839 phút -> 839/60/24 ngày
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(839 / 60 / 24))),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
 ]
 
@@ -345,11 +373,13 @@ def build_check_message(pair: dict, result: dict) -> str:
 
 HELP_TEXT = (
     "*PAIRS BOT — MULTI-PAIR*\n"
-    "Đang theo dõi 2 cặp:\n"
+    "Đang theo dõi 3 cặp:\n"
     "• `cl` — CL/BRENTOIL (WTI vs Brent)\n"
-    "• `xyz100` — XYZ100/SP500 ⚠️ mẫu backtest còn nhỏ, chưa nên trade thật size lớn\n\n"
+    "• `xyz100` — XYZ100/SP500 ⚠️ mẫu backtest còn nhỏ, chưa nên trade thật size lớn\n"
+    "• `goldsilver` — GOLD/SILVER ⚠️ chỉ có lãi ròng ở ngưỡng z >= 2.5,"
+    " mẫu backtest 29 trades/90 ngày — theo dõi sát trước khi tăng size\n\n"
     "Gõ /check để xem trạng thái TẤT CẢ cặp ngay lúc này.\n"
-    "Gõ /check cl hoặc /check xyz100 để xem riêng 1 cặp.\n"
+    "Gõ /check cl, /check xyz100 hoặc /check goldsilver để xem riêng 1 cặp.\n"
     "Tín hiệu tự động (khi đủ điều kiện vào lệnh) sẽ được bot gửi riêng mỗi "
     "5 phút cho từng cặp, không cần bạn phải hỏi."
 )
