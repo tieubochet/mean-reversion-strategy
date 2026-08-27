@@ -1,8 +1,10 @@
 {
-  "rewrites": [
-    { "source": "/api/webhook", "destination": "/api" }
+  "version": 2,
+  "builds": [
+    { "src": "api/index.py", "use": "@vercel/python" }
   ],
-  "functions": {
-    "api/index.py": { "maxDuration": 30 }
-  }
+  "routes": [
+    { "src": "/api/webhook", "dest": "api/index.py" },
+    { "src": "/api", "dest": "api/index.py" }
+  ]
 }
