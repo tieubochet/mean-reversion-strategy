@@ -16,22 +16,12 @@ thật /api hay /api/webhook nhờ vercel.json rewrites).
 
 CẶP ĐANG THEO DÕI:
     1. cl        — xyz:CL (WTI) vs xyz:BRENTOIL   — spread = price_A - price_B ($/bbl)
-                   [nguồn giá: Hyperliquid]
     2. xyz100    — xyz:XYZ100 vs xyz:SP500        — spread = ln(price_A / price_B)
                    (log-ratio, vì 2 chỉ số có scale giá khác xa nhau)
-                   [nguồn giá: Hyperliquid]
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
                    (log-ratio "gold/silver ratio" kinh điển, vàng ~$4-5k/oz vs
                    bạc ~$100/oz lệch scale rất xa, KHÔNG dùng hiệu số $ được.
                    Đã backtest 90 ngày, m15 — xem README mục cảnh báo mẫu.)
-                   [nguồn giá: Hyperliquid]
-    4. xauxaut   — XAU vs XAUT                    — spread = price_A - price_B ($/oz)
-                   [nguồn giá: VARIATIONAL, không phải Hyperliquid — xem khối
-                   VARIATIONAL DATA FETCHING bên dưới]
-                   mean/std lấy từ backtest 2 tháng nến 1H PROXY qua OKX (Variational
-                   không có API lịch sử giá, chỉ có snapshot hiện tại), còn giá live
-                   z-score dùng đúng mark price thật của Variational. Xem README mục
-                   "Thêm cặp XAU/XAUT" để biết chi tiết + cảnh báo mẫu.
 
 QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites" trỏ
 "/api" và "/api/webhook" về "/api/index", nếu không sẽ bị 404 ở tầng Vercel.
@@ -39,7 +29,7 @@ QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER hoặc _XAUXAUT), tất cả có default hợp lý:
+    Theo từng cặp (suffix _CL, _XYZ100 hoặc _GOLDSILVER), tất cả có default hợp lý:
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
            EXIT_Z_THRESHOLD_<X>, EXPECTED_HOLD_DAYS_<X>, CAPITAL_PER_LEG_<X>
 
@@ -49,22 +39,6 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
    ròng (ngưỡng thấp hơn lỗ vì spread rất "chặt" -> phí ăn hết lợi nhuận).
    Mặc định threshold=3.0 nhưng mẫu chỉ 29 trades/90 ngày -> theo dõi sát
    trước khi tăng size, xem README mục "Thêm cặp Gold/Silver".
-⚠️ CẶP xauxaut MỚI, KHÁC KIẾN TRÚC:
-   - Giá + funding lấy từ Variational (/metadata/stats), KHÔNG phải Hyperliquid.
-   - Ticker "XAU"/"XAUT" trong PAIRS là DỰ ĐOÁN theo quy ước ticker của Variational
-     (giống "BTC", "ETH" trong doc mẫu) — CHƯA verify được bằng cách gọi API thật
-     (ngoài whitelist mạng của môi trường build code này). Trước khi deploy, tự
-     gọi GET /metadata/stats 1 lần, tìm đúng ticker trong "listings" rồi sửa
-     symbol_a/symbol_b nếu tên khác.
-   - mean=14.0365, std=7.4395 lấy từ backtest 2 tháng nến 1H nhưng qua PROXY OKX
-     (Variational không có API lịch sử giá). Threshold mặc định 9.30 ($1.25σ) chọn
-     từ bản backtest expanding-mean (không look-ahead) cho net PnL cao nhất, nhưng
-     mẫu chỉ ~8 trades/2 tháng -> CHƯA đủ tin cậy để tăng size, theo dõi sát qua
-     /check xauxaut trước khi trade thật.
-   - Variational fee protocol = 0% thật, nhưng OLP spread (~3-6bps tuỳ leg) mới là
-     chi phí thực tế lúc khớp lệnh — FEE_BPS_PER_FILL=2.2 dùng chung với 3 cặp kia
-     có thể lạc quan cho riêng cặp này, cân nhắc chỉnh SIGNAL_THRESHOLD_XAUXAUT cao
-     hơn nếu thấy slippage thực tế lớn hơn giả định.
 =============================================================================
 """
 
@@ -84,11 +58,6 @@ app = Flask(__name__)
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 INTERVAL = "15m"
 HIP3_DEX = "xyz"
-
-# Variational: public read-only API, KHÔNG cần key. 1 lần gọi /metadata/stats
-# trả về mark_price + funding_rate cho TẤT CẢ listing cùng lúc (khác Hyperliquid
-# cần 2 call riêng: candleSnapshot cho giá, metaAndAssetCtxs cho funding).
-VARIATIONAL_BASE_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -155,26 +124,6 @@ PAIRS = [
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(798 / 60 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
-    {
-        "id": "xauxaut",
-        "label": "XAU/XAUT",
-        "symbol_a": "XAU",       # TODO: verify đúng ticker thật qua GET /metadata/stats trước khi deploy
-        "symbol_b": "XAUT",      # TODO: verify đúng ticker thật qua GET /metadata/stats trước khi deploy
-        "data_source": "variational",       # khác 3 cặp trên (mặc định "hyperliquid")
-        "spread_type": "diff",              # spread = price_A - price_B, cùng scale ~$/oz
-        # Backtest 2 tháng, nến 1H, PROXY qua OKX (Variational không có API lịch sử giá)
-        # -> spread_stats: task1_spread_stats.csv
-        "mean": float(_pair_env("SPREAD_MEAN", "XAUXAUT", "14.0365")),
-        "std": float(_pair_env("SPREAD_STD", "XAUXAUT", "7.4395")),
-        # Chọn từ bản backtest expanding-mean (không look-ahead, task2b): ngưỡng 9.30
-        # (~1.25σ) cho net PnL cao nhất trong mẫu -> 8 trades/2 tháng, winrate 100%,
-        # nhưng mẫu còn mỏng, theo dõi sát trước khi tăng size.
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XAUXAUT", "9.30")),
-        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XAUXAUT", "0.0")),
-        # task2b, threshold=9.30: hold trung bình 100.62h -> quy ra ngày
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XAUXAUT", str(100.62 / 24))),
-        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XAUXAUT", "5000")),
-    },
 ]
 
 PAIRS_BY_ID = {p["id"]: p for p in PAIRS}
@@ -223,44 +172,6 @@ def fetch_funding_rates(symbol_a: str, symbol_b: str) -> dict:
     return rates
 
 
-# =============================================================================
-# VARIATIONAL DATA FETCHING (cho cặp "xauxaut" — data_source == "variational")
-# =============================================================================
-
-def fetch_variational_stats() -> dict:
-    """1 call duy nhất lấy TOÀN BỘ listing (mark_price + funding_rate) của
-    Variational, trả về dict ticker -> listing để tra cứu, tránh gọi API 2 lần
-    cho 2 leg cùng 1 pair."""
-    resp = requests.get(f"{VARIATIONAL_BASE_URL}/metadata/stats", timeout=8)
-    resp.raise_for_status()
-    listings = resp.json().get("listings", [])
-    return {l["ticker"]: l for l in listings}
-
-
-def fetch_latest_close_variational(ticker: str, stats: dict) -> float:
-    listing = stats.get(ticker)
-    if not listing:
-        raise RuntimeError(f"Không tìm thấy ticker '{ticker}' trong listings của Variational")
-    return float(listing["mark_price"])
-
-
-def fetch_funding_rates_variational(symbol_a: str, symbol_b: str, stats: dict) -> dict:
-    """estimate_funding_cost() nhân rate với *24 để ra rate/ngày (theo quy ước
-    của Hyperliquid, funding settle mỗi giờ). Variational settle theo
-    funding_interval_s riêng (VD 28800s = 8h cho BTC) nên phải quy đổi funding_rate
-    thô của Variational (rate/1 kỳ settle) về "rate tương đương mỗi giờ" trước khi
-    trả ra, để dùng chung được với estimate_funding_cost() sẵn có."""
-    rates = {}
-    for sym in (symbol_a, symbol_b):
-        listing = stats.get(sym)
-        if not listing:
-            raise RuntimeError(f"Không tìm thấy ticker '{sym}' trong listings của Variational")
-        interval_hours = float(listing["funding_interval_s"]) / 3600
-        raw_rate = float(listing["funding_rate"])
-        rates[sym] = raw_rate / interval_hours if interval_hours > 0 else 0.0
-    return rates
-
-
 def compute_spread(price_a: float, price_b: float, spread_type: str) -> float:
     if spread_type == "logratio":
         return math.log(price_a / price_b)
@@ -268,26 +179,17 @@ def compute_spread(price_a: float, price_b: float, spread_type: str) -> float:
 
 
 def compute_zscore(pair: dict, with_funding: bool) -> dict:
-    """Lấy giá 2 leg (và funding, nếu cần). Với data_source="variational", 1 call
-    /metadata/stats đã trả về mọi thứ nên không cần thread pool. Mặc định
-    ("hyperliquid") vẫn lấy giá 2 leg (và funding) SONG SONG qua thread pool như cũ
-    -> giảm thời gian chờ tối đa, tránh timeout function trên Vercel."""
+    """Lấy giá 2 leg (và funding, nếu cần) SONG SONG qua thread pool -> giảm
+    thời gian chờ tối đa, tránh timeout function trên Vercel."""
     symbol_a, symbol_b = pair["symbol_a"], pair["symbol_b"]
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fut_a = ex.submit(fetch_latest_close, symbol_a)
+        fut_b = ex.submit(fetch_latest_close, symbol_b)
+        fut_funding = ex.submit(fetch_funding_rates, symbol_a, symbol_b) if with_funding else None
 
-    if pair.get("data_source") == "variational":
-        stats = fetch_variational_stats()
-        price_a = fetch_latest_close_variational(symbol_a, stats)
-        price_b = fetch_latest_close_variational(symbol_b, stats)
-        funding_rates = fetch_funding_rates_variational(symbol_a, symbol_b, stats) if with_funding else None
-    else:
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            fut_a = ex.submit(fetch_latest_close, symbol_a)
-            fut_b = ex.submit(fetch_latest_close, symbol_b)
-            fut_funding = ex.submit(fetch_funding_rates, symbol_a, symbol_b) if with_funding else None
-
-            price_a = fut_a.result()
-            price_b = fut_b.result()
-            funding_rates = fut_funding.result() if fut_funding else None
+        price_a = fut_a.result()
+        price_b = fut_b.result()
+        funding_rates = fut_funding.result() if fut_funding else None
 
     spread = compute_spread(price_a, price_b, pair["spread_type"])
     std = pair["std"]
@@ -342,16 +244,6 @@ def estimate_funding_cost(pair: dict, stats: dict, funding_rates: dict) -> dict:
     }
 
 
-def _fetch_funding_rates_for_pair(pair: dict) -> dict:
-    """Fallback dùng khi compute_zscore chưa lấy funding lúc đầu (nhánh cron,
-    with_funding=False) nhưng z-score sau đó lại đủ ngưỡng -> cần gọi bù. Branch
-    đúng data_source của pair, tránh gọi nhầm Hyperliquid cho pair Variational."""
-    if pair.get("data_source") == "variational":
-        stats = fetch_variational_stats()
-        return fetch_funding_rates_variational(pair["symbol_a"], pair["symbol_b"], stats)
-    return fetch_funding_rates(pair["symbol_a"], pair["symbol_b"])
-
-
 def evaluate_signal(pair: dict, force_funding_check: bool = False) -> dict:
     """
     force_funding_check=False (nhánh cron /api): nếu |z| chưa tới ngưỡng,
@@ -372,7 +264,7 @@ def evaluate_signal(pair: dict, force_funding_check: bool = False) -> dict:
     if abs(z) < pair["threshold"] and not force_funding_check:
         return result
 
-    funding_rates = stats["funding_rates"] or _fetch_funding_rates_for_pair(pair)
+    funding_rates = stats["funding_rates"] or fetch_funding_rates(pair["symbol_a"], pair["symbol_b"])
     funding = estimate_funding_cost(pair, stats, funding_rates)
     expected_pnl = estimate_expected_pnl(pair, stats)
     fee = fee_per_round(pair)
@@ -481,16 +373,13 @@ def build_check_message(pair: dict, result: dict) -> str:
 
 HELP_TEXT = (
     "*PAIRS BOT — MULTI-PAIR*\n"
-    "Đang theo dõi 4 cặp:\n"
+    "Đang theo dõi 3 cặp:\n"
     "• `cl` — CL/BRENTOIL (WTI vs Brent)\n"
     "• `xyz100` — XYZ100/SP500 ⚠️ mẫu backtest còn nhỏ, chưa nên trade thật size lớn\n"
     "• `goldsilver` — GOLD/SILVER ⚠️ chỉ có lãi ròng ở ngưỡng z >= 2.5,"
-    " mẫu backtest 29 trades/90 ngày — theo dõi sát trước khi tăng size\n"
-    "• `xauxaut` — XAU/XAUT (giá lấy từ Variational) ⚠️ mean/std backtest qua proxy"
-    " OKX (Variational không có API lịch sử), mẫu chỉ ~8 trades/2 tháng —"
-    " theo dõi sát trước khi tăng size\n\n"
+    " mẫu backtest 29 trades/90 ngày — theo dõi sát trước khi tăng size\n\n"
     "Gõ /check để xem trạng thái TẤT CẢ cặp ngay lúc này.\n"
-    "Gõ /check cl, /check xyz100, /check goldsilver hoặc /check xauxaut để xem riêng 1 cặp.\n"
+    "Gõ /check cl, /check xyz100 hoặc /check goldsilver để xem riêng 1 cặp.\n"
     "Tín hiệu tự động (khi đủ điều kiện vào lệnh) sẽ được bot gửi riêng mỗi "
     "5 phút cho từng cặp, không cần bạn phải hỏi."
 )
