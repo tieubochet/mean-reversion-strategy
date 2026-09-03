@@ -230,23 +230,21 @@ def fetch_variational_listings() -> list:
 
 def _variational_hourly_decimal(listing: dict) -> float:
     """
-    Đổi funding Variational về cùng đơn vị Hyperliquid: decimal / giờ.
+    Đổi funding Variational về cùng đơn vị Hyperliquid: decimal / giờ
+    (để estimate_funding_cost dùng daily_rate = hourly * 24).
 
-    Docs Variational mâu thuẫn đơn vị (API page vs funding-rates page).
-    Cách dùng ở đây, khớp số trên UI kiểu "0.025581" với interval 4h:
-        funding_rate = phần trăm mỗi KỲ funding (0.025581 == 0.025581% / 4h)
-        hourly_decimal = (funding_rate / 100) / (interval_s / 3600)
+    Đã verify 2026-09-03:
+      API `funding_rate` là APR dạng decimal — KHÔNG phải %/kỳ.
+      0.1095 == 10.95% APR == 0.00125%/giờ (interest mặc định).
+      329/550 market đang đúng 0.1095.
+      Funding map: "10.95%  4hr: 0.0050%" = 0.1095 * (4/8760)*100.
+      DefiLlama "0.0013%" của XAU ≈ % mỗi kỳ 4h, không phải field API.
 
-    Ví dụ XAU funding_rate=0.025581, interval=14400s
-        -> 0.00025581 / 4h -> 0.00006395 / giờ
-        -> daily ≈ 0.153% notional.
-
-    Nếu số funding/ngày trên /check lệch UI Omni, sửa đúng 1 chỗ này.
+    hourly_decimal = APR / 8760 = funding_rate / 8760
+    payment mỗi kỳ ≈ notional * funding_rate * (interval_s / (365*24*3600))
     """
     raw = float(listing.get("funding_rate") or 0.0)
-    interval_s = int(listing.get("funding_interval_s") or 0)
-    interval_h = (interval_s / 3600.0) if interval_s > 0 else 1.0
-    return (raw / 100.0) / interval_h
+    return raw / 8760.0
 
 
 def fetch_variational_pair(symbol_a: str, symbol_b: str) -> dict:
