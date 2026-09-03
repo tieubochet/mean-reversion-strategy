@@ -424,20 +424,15 @@ def _direction_text(pair: dict, z: float) -> str:
 def build_signal_message(pair: dict, result: dict) -> str:
     """Tin nhắn chủ động khi cron phát hiện đủ điều kiện vào lệnh."""
     z = result["z"]
-    f = result["funding"]
     ex = result["exit_level"]
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
         f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
         f"Spread hiện tại: `{result['spread']:.4f}`\n"
-        f"Mean cố định: `{pair['mean']:.4f}` | Std cố định: `{pair['std']:.4f}`\n\n"
-        f"Lợi nhuận kỳ vọng (nếu hồi mean): `${result['expected_pnl']:.2f}`\n"
-        f"Phí trade ({FILLS_PER_ROUND} fill x {FEE_BPS_PER_FILL}bps): `${result['fee_per_round']:.2f}`\n"
-        f"Funding/ngày dự kiến: `${f['daily_funding_cost']:.2f}`\n"
-        f"Funding cost ước tính ({pair['expected_hold_days']:.2f} ngày hold): `${f['total_funding_cost']:.2f}`\n"
         f"*Net kỳ vọng: `${result['net_expected']:.2f}`*\n\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
         f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `{ex['exit_spread']:.4f}` "
         f"(z ≈ `{ex['exit_z']:.2f}`)\n"
         f"_Bot không tự động báo khi tới điểm đóng — bạn tự theo dõi bằng /check, "
@@ -446,35 +441,24 @@ def build_signal_message(pair: dict, result: dict) -> str:
 
 
 def build_check_message(pair: dict, result: dict) -> str:
-    """Đoạn trạng thái của 1 cặp — dùng ghép trong /check."""
+    """Đoạn trạng thái của 1 cặp — cùng format với SIGNAL."""
     z = result["z"]
-    status_icon = "✅" if result["should_enter"] else "⏸"
-
-    lines = [
-        f"*{pair['label']}*",
-        f"{status_icon} {result['reason']}",
-        f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})",
-        f"Spread hiện tại: `{result['spread']:.4f}`",
-        f"Mean cố định: `{pair['mean']:.4f}` | Std cố định: `{pair['std']:.4f}`",
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | Giá {pair['symbol_b']}: `${result['price_B']:.2f}`",
-    ]
-
-    if "net_expected" in result:
-        f = result["funding"]
-        ex = result["exit_level"]
-        lines += [
-            f"Lợi nhuận kỳ vọng: `${result['expected_pnl']:.2f}`",
-            f"Phí trade: `${result['fee_per_round']:.2f}`",
-            f"Funding/ngày dự kiến: `${f['daily_funding_cost']:.2f}`",
-            f"Funding cost ước tính ({pair['expected_hold_days']:.2f} ngày): `${f['total_funding_cost']:.2f}`",
-            f"*Net kỳ vọng: `${result['net_expected']:.2f}`*",
-            f"🎯 Gợi ý đóng lệnh (nếu đang mở): spread về `{ex['exit_spread']:.4f}` (z ≈ `{ex['exit_z']:.2f}`)",
-        ]
-
-    if result["should_enter"]:
-        lines.append(f"→ {_direction_text(pair, z)}")
-
-    return "\n".join(lines)
+    ex = result.get("exit_level") or {}
+    net = result.get("net_expected")
+    net_txt = f"${net:.2f}" if net is not None else "n/a"
+    exit_spread = ex.get("exit_spread", pair["mean"])
+    exit_z = ex.get("exit_z", pair.get("exit_z", 0.0))
+    return (
+        f"*PAIRS SIGNAL — {pair['label']}*\n"
+        f"{_direction_text(pair, z)}\n\n"
+        f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
+        f"Spread hiện tại: `{result['spread']:.4f}`\n"
+        f"*Net kỳ vọng: `{net_txt}`*\n\n"
+        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `{exit_spread:.4f}` "
+        f"(z ≈ `{exit_z:.2f}`)"
+    )
 
 
 HELP_TEXT = (
