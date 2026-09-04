@@ -141,11 +141,11 @@ PAIRS = [
     },
     {
         "id": "xau",
-        "label": "XAU/XAUT",
+        "label": "XAUT/XAU",
         "venue": "variational",
-        "symbol_a": "XAU",                  # Variational ticker (gold spot perp)
-        "symbol_b": "XAUT",                 # Variational ticker (Tether Gold perp)
-        "spread_type": "diff",              # spread = XAU - XAUT ($/oz), cùng scale
+        "symbol_a": "XAUT",                  # Variational ticker (gold spot perp)
+        "symbol_b": "XAU",                 # Variational ticker (Tether Gold perp)
+        "spread_type": "diff",              # spread = XAUT - XAU ($/oz), cùng scale
         # Proxy 1H 60 ngày OKX (PAXG≈XAU, XAUT), 1441 nến:
         # mean 6.5758 / std 6.1410 / p10 -1.80 / p90 15.30
         "mean": float(_pair_env("SPREAD_MEAN", "XAU", "6.5758")),
