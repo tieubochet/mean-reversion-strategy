@@ -148,7 +148,7 @@ PAIRS = [
         "spread_type": "diff",              # spread = XAUT - XAU ($/oz), cùng scale
         # Proxy 1H 60 ngày OKX (PAXG≈XAU, XAUT), 1441 nến:
         # mean 6.5758 / std 6.1410 / p10 -1.80 / p90 15.30
-        "mean": float(_pair_env("SPREAD_MEAN", "XAU", "6.5758")),
+        "mean": float(_pair_env("SPREAD_MEAN", "XAU", "-6.5758")),
         "std": float(_pair_env("SPREAD_STD", "XAU", "6.1410")),
         # Expanding-mean robustness: 1.0σ net còn dương, WR cao; 0.5σ phí ăn hết.
         # 1.25σ ít trade hơn nhưng net/trade tốt hơn. Default 1.0.
