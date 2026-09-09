@@ -429,7 +429,7 @@ def build_signal_message(pair: dict, result: dict) -> str:
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
         f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
-        f"Spread hiện tại: `{result['spread']:.4f}`\n"
+        f"Spread hiện tại: `{result['spread']:.4f}`\n\n"
         f"*Bú: `${result['net_expected']:.2f}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
