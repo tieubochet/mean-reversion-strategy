@@ -417,8 +417,8 @@ def send_telegram_message(text: str, chat_id: str = None):
 
 
 def _direction_text(pair: dict, z: float) -> str:
-    return (f"🔴 SHORT SPREAD (Short {pair['symbol_a']} / Long {pair['symbol_b']})" if z > 0
-            else f"🟢 LONG SPREAD (Long {pair['symbol_a']} / Short {pair['symbol_b']})")
+    return (f"🔴 SHORT {pair['symbol_a']} / LONG {pair['symbol_b']})" if z > 0
+            else f"🟢 LONG {pair['symbol_a']} / SHORT {pair['symbol_b']})")
 
 
 def build_signal_message(pair: dict, result: dict) -> str:
@@ -452,7 +452,7 @@ def build_check_message(pair: dict, result: dict) -> str:
         f"Spread hiện tại: `{result['spread']:.4f}`\n\n"
         f"*Bú PnL: `{net_txt}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`"
 
     )
 
