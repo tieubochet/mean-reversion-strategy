@@ -433,7 +433,7 @@ def build_signal_message(pair: dict, result: dict) -> str:
         f"*Bú: `${result['net_expected']:.2f}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"Gõ /check nếu muốn check giá hiện tại"
+        f"Gõ /check để biết giá hiện tại"
     )
 
 
