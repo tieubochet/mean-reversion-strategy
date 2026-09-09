@@ -430,13 +430,10 @@ def build_signal_message(pair: dict, result: dict) -> str:
         f"{_direction_text(pair, z)}\n\n"
         f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
         f"Spread hiện tại: `{result['spread']:.4f}`\n"
-        f"*Net kỳ vọng: `${result['net_expected']:.2f}`*\n\n"
+        f"*Bú: `${result['net_expected']:.2f}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `{ex['exit_spread']:.4f}` "
-        f"(z ≈ `{ex['exit_z']:.2f}`)\n"
-        f"_Bot không tự động báo khi tới điểm đóng — bạn tự theo dõi bằng /check, "
-        f"hoặc đặt take-profit/limit tương ứng ngay khi vào lệnh._"
+        f"Gõ /check nếu muốn check giá hiện tại"
     )
 
 
@@ -453,7 +450,7 @@ def build_check_message(pair: dict, result: dict) -> str:
         f"{_direction_text(pair, z)}\n\n"
         f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
         f"Spread hiện tại: `{result['spread']:.4f}`\n"
-        f"*Net kỳ vọng: `{net_txt}`*\n\n"
+        f"*Bú: `{net_txt}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
         f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `{exit_spread:.4f}` "
