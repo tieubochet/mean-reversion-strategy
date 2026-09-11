@@ -449,6 +449,7 @@ def build_check_message(pair: dict, result: dict) -> str:
     exit_spread = ex.get("exit_spread", pair["mean"])
     exit_z = ex.get("exit_z", pair.get("exit_z", 0.0))
     return (
+        "--------------------------------\n"
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
         f"Spread: `{result['spread']:.4f}`\n"
@@ -456,7 +457,7 @@ def build_check_message(pair: dict, result: dict) -> str:
                 f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
         f"*Bú Net PnL: `{net_txt}`*\n\n"
         f"Gõ /entry để biết gợi ý vào lệnh\n"
-        "--------------------------------\n"
+        
     )
 
 
@@ -480,6 +481,7 @@ PAIRS_TEXT = (
     "*GỢI Ý VÀO LỆNH*\n\n"
     "🟢 LONG BRENTOIL / SHORT CL khi Net PnL <= 60 \n"
     "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n\n"
+
     "Chia vốn thành 4-5 phần, cứ 10 giá dca 2k/leg\n"
     "Lưu ý: Net PnL dao động từ *30 đến 150*, chỉ vào lệnh khi Net PnL <= 60 hoặc >= 90.\n"
     "--------------------------------\n"
