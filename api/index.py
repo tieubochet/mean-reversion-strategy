@@ -579,9 +579,9 @@ def telegram_webhook():
     arg = parts[1].lower() if len(parts) > 1 else None
 
     try:
-        if command in ("/start", "/help", "/entry"):
+        if command in ("/start", "/help"):
             send_telegram_message(HELP_TEXT, chat_id=chat_id)
-        elif command == "/entry":
+        elif command in ("/entry"):
             send_telegram_message(PAIRS_TEXT, chat_id=chat_id)
         elif command == "/check":
             if arg and arg in PAIRS_BY_ID:
