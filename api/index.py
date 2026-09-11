@@ -491,8 +491,8 @@ PAIRS_TEXT = (
     "🔴 SHORT GOLD / LONG SILVER khi Net PnL <= 50 \n\n"
     "Chia vốn thành 4-5 phần, cứ 35 - 45 giá dca 2k/leg\n"
     "Lưu ý: Net PnL dao động từ *20 đến 200*, chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n\n\n"
-    "Thuật ngữ:\n"
-    "2k/leg: 2k long và 2k short)\n"
+    "*Giải thích*:\n"
+    "2k/leg: 2k long và 2k short\n"
     "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg\n\n\n"
 
     "*LUÔN KỶ LUẬT KHI VÀO LỆNH*"
