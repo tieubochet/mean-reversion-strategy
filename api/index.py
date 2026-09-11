@@ -139,25 +139,27 @@ PAIRS = [
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(798 / 60 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
-    {
-        "id": "xau",
-        "label": "XAUT/XAU",
-        "venue": "variational",
-        "symbol_a": "XAUT",                  # Variational ticker (gold spot perp)
-        "symbol_b": "XAU",                 # Variational ticker (Tether Gold perp)
-        "spread_type": "diff",              # spread = XAUT - XAU ($/oz), cùng scale
+    
+    #{
+    #    "id": "xau",
+    #    "label": "XAUT/XAU",
+    #    "venue": "variational",
+    #    "symbol_a": "XAUT",                  # Variational ticker (gold spot perp)
+    #    "symbol_b": "XAU",                 # Variational ticker (Tether Gold perp)
+    #    "spread_type": "diff",              # spread = XAUT - XAU ($/oz), cùng scale
         # Proxy 1H 60 ngày OKX (PAXG≈XAU, XAUT), 1441 nến:
         # mean 6.5758 / std 6.1410 / p10 -1.80 / p90 15.30
-        "mean": float(_pair_env("SPREAD_MEAN", "XAU", "-6.5758")),
-        "std": float(_pair_env("SPREAD_STD", "XAU", "6.1410")),
+    #    "mean": float(_pair_env("SPREAD_MEAN", "XAU", "-6.5758")),
+    #    "std": float(_pair_env("SPREAD_STD", "XAU", "6.1410")),
         # Expanding-mean robustness: 1.0σ net còn dương, WR cao; 0.5σ phí ăn hết.
         # 1.25σ ít trade hơn nhưng net/trade tốt hơn. Default 1.0.
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XAU", "1.0")),
-        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XAU", "0.0")),
+    #    "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XAU", "1.0")),
+    #    "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XAU", "0.0")),
         # Hold TB ~73.5h @ 1.0σ (expanding mean)
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XAU", str(73.5 / 24))),
-        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XAU", "5000")),
-    },
+    #    "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XAU", str(73.5 / 24))),
+    #    "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XAU", "5000")),
+    #},
+    
 ]
 
 PAIRS_BY_ID = {p["id"]: p for p in PAIRS}
