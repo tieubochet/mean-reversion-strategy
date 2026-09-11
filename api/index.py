@@ -430,12 +430,12 @@ def build_signal_message(pair: dict, result: dict) -> str:
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
         f"Spread hiện tại: `{result['spread']:.4f}`\n\n"
-        f"*Bú PnL: `${result['net_expected']:.2f}`*\n\n"
+        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"Gõ /check để biết giá hiện tại"
+        f"Gõ /check để biết giá hiện tại\n"
+        f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
 
@@ -450,12 +450,11 @@ def build_check_message(pair: dict, result: dict) -> str:
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
         f"Spread hiện tại: `{result['spread']:.4f}`\n\n"
-        f"*Bú PnL: `{net_txt}`*\n\n"
+        f"*Bú Net PnL: `{net_txt}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`"
-
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n"
+        f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
 
@@ -473,6 +472,24 @@ HELP_TEXT = (
     "để xem riêng 1 cặp.\n"
     "Tín hiệu tự động (khi đủ điều kiện vào lệnh) sẽ được bot gửi riêng mỗi "
     "5 phút cho từng cặp, không cần bạn phải hỏi."
+)
+
+PAIRS_TEXT = (
+    "*GỢI Ý VÀO LỆNH*\n\n"
+    "🟢 LONG BRENTOIL / SHORT CL khi Net PnL <= 60 \n"
+    "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n"
+    "Chia vốn thành 4-5 phần, cứ 10 giá dca 2k/leg (tức long 2k BRENTOIL thì short 2k CL và ngược lại)\n"
+    "Lưu ý: Net PnL cặp này thường dao động từ *30 đến 150*, nên chỉ vào lệnh khi Net PnL <= 60 hoặc >= 90.\n"
+    "--------------------------------\n"
+    "🟢 LONG QQQ / SHORT US500 khi Net PnL >= 190 \n"
+    "🔴 SHORT QQQ / LONG US500 khi Net PnL <= 160 \n\n"
+    "Chia vốn thành 4-5 phần, cứ 20 - 30 giá dca 2k/leg (tức long 2k QQQ thì short 2k US500 và ngược lại)\n"
+    "Lưu ý: Net PnL cặp này thường dao động từ *120 đến 350*, nên chỉ vào lệnh khi Net PnL >= 190 hoặc <= 160.\n"
+    "--------------------------------\n"
+    "🟢 LONG GOLD / SHORT SILVER khi Net PnL >= 150 \n"
+    "🔴 SHORT GOLD / LONG SILVER khi Net PnL <= 50 \n\n"
+    "Chia vốn thành 4-5 phần, cứ 35 - 45 giá dca 2k/leg (tức long 2k GOLD thì short 2k SILVER và ngược lại)\n"
+    "Lưu ý: Net PnL cặp này thường dao động từ *20 đến 200*, nên chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n"
 )
 
 
@@ -561,8 +578,10 @@ def telegram_webhook():
     arg = parts[1].lower() if len(parts) > 1 else None
 
     try:
-        if command in ("/start", "/help"):
+        if command in ("/start", "/help", "/entry"):
             send_telegram_message(HELP_TEXT, chat_id=chat_id)
+        elif command == "/entry":
+            send_telegram_message(PAIRS_TEXT, chat_id=chat_id)
         elif command == "/check":
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
