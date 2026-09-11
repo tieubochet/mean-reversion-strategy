@@ -430,10 +430,11 @@ def build_signal_message(pair: dict, result: dict) -> str:
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Spread hiện tại: `{result['spread']:.4f}`\n\n"
-        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
+        f"Spread: `{result['spread']:.4f}`\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
+        
         f"Gõ /check để biết giá hiện tại\n"
         f"Gõ /entry để biết gợi ý vào lệnh"
     )
@@ -450,10 +451,10 @@ def build_check_message(pair: dict, result: dict) -> str:
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Spread hiện tại: `{result['spread']:.4f}`\n\n"
-        f"*Bú Net PnL: `{net_txt}`*\n\n"
+        f"Spread: `{result['spread']:.4f}`\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n"
+                f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"*Bú Net PnL: `{net_txt}`*\n\n"
         f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
