@@ -478,7 +478,7 @@ HELP_TEXT = (
 PAIRS_TEXT = (
     "*GỢI Ý VÀO LỆNH*\n\n"
     "🟢 LONG BRENTOIL / SHORT CL khi Net PnL <= 60 \n"
-    "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n"
+    "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n\n"
     "Chia vốn thành 4-5 phần, cứ 10 giá dca 2k/leg (tức long 2k BRENTOIL thì short 2k CL và ngược lại)\n"
     "Lưu ý: Net PnL cặp này thường dao động từ *30 đến 150*, nên chỉ vào lệnh khi Net PnL <= 60 hoặc >= 90.\n"
     "--------------------------------\n"
