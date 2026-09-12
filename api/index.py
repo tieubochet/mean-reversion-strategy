@@ -96,11 +96,11 @@ PAIRS = [
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
         "spread_type": "diff",              # spread = price_A - price_B
-        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-3.2858")),
-        "std": float(_pair_env("SPREAD_STD", "CL", "0.4675")),
+        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.1570")),
+        "std": float(_pair_env("SPREAD_STD", "CL", "0.8619")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(379.7 / 60 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", 12.958)),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
