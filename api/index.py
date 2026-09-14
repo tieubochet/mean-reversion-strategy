@@ -82,14 +82,12 @@ PAIRS = [
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
-        "spread_type": "diff",
-        # Hyperliquid 15m ~52 ngày (API chỉ giữ ~5000 nến)
-        # 2026-07-22 → 2026-09-12, mean -4.4129 / std 0.9297
-        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.4129")),
-        "std": float(_pair_env("SPREAD_STD", "CL", "0.9297")),
+        "spread_type": "diff",              # spread = price_A - price_B
+        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-3.2858")),
+        "std": float(_pair_env("SPREAD_STD", "CL", "0.4675")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(275.9 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(379.7 / 60 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
