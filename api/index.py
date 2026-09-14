@@ -12,7 +12,7 @@ thật /api hay /api/webhook nhờ vercel.json rewrites).
     POST     /api/webhook  -> Telegram tự gọi mỗi khi có tin nhắn mới.
                                /check            -> trạng thái TẤT CẢ cặp
                                /check <pair_id>  -> trạng thái 1 cặp cụ thể
-                               (pair_id: "cl" / "xyz100" / "goldsilver" / "xau")
+                               (pair_id: "cl" / "xyz100" / "goldsilver" / "xau" / "ondowti")
 
 CẶP ĐANG THEO DÕI:
     1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B ($/bbl)
@@ -21,10 +21,14 @@ CẶP ĐANG THEO DÕI:
                     nguồn: Hyperliquid HIP-3 (xyz)
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
                     nguồn: Hyperliquid HIP-3 (xyz)
-    4. xau        — Variational XAU vs XAUT       — spread = price_A - price_B ($/oz)
-                    XAU = gold spot perp, XAUT = Tether Gold perp.
+    4. xau        — Variational XAUT vs XAU       — spread = XAUT - XAU ($/oz)
+                    XAUT = Tether Gold perp, XAU = gold spot perp.
                     nguồn: Variational GET /metadata/stats (mark + funding).
                     Variational không public nến lịch sử.
+    5. ondowti    — Ondo Perps WTI-USD.P vs BRENT-USD.P
+                    spread = WTI − BRENT ($/bbl)
+                    nguồn: GET /v1/perps/contracts (mark + funding).
+                    Nến lịch sử public: /v1/perps/history symbol=WTIUSD.P / BRENTUSD.P.
 
 QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites" trỏ
 "/api" và "/api/webhook" về "/api/index", nếu không sẽ bị 404 ở tầng Vercel.
@@ -32,7 +36,7 @@ QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER hoặc _XAU), tất cả có default hợp lý:
+    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER, _XAU hoặc _ONDOWTI), default hợp lý:
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
            EXIT_Z_THRESHOLD_<X>, EXPECTED_HOLD_DAYS_<X>, CAPITAL_PER_LEG_<X>
 
@@ -42,10 +46,13 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
    ròng (ngưỡng thấp hơn lỗ vì spread rất "chặt" -> phí ăn hết lợi nhuận).
    Mặc định threshold=3.0 nhưng mẫu chỉ 29 trades/90 ngày -> theo dõi sát
    trước khi tăng size, xem README mục "Thêm cặp Gold/Silver".
-⚠️ CẶP xau (XAU/XAUT trên Variational): mean/std từ proxy OKX 1H 60 ngày
-   (PAXG≈XAU, XAUT), KHÔNG phải mark Variational lịch sử. Mặc định
-   threshold=1.0σ. Funding Variational interval 4h — xem ghi chú đơn vị
-   trong fetch_variational_pair(). Verify số funding/ngày với UI Omni.
+⚠️ CẶP xau (XAUT − XAU trên Variational): mean/std = đảo dấu proxy OKX
+   1H 60 ngày (PAXG≈XAU). Mean mặc định -6.5758. Nếu Vercel còn
+   SPREAD_MEAN_XAU dương thì đổi thành -6.5758. Threshold 1.0σ.
+⚠️ CẶP ondowti (WTI−BRENT trên Ondo): nến 1H hợp lệ từ 2026-07-24
+   (Brent close=0 trước đó). Mean -4.4384 / std 0.9746. Mẫu trade
+   rất mỏng (2 lệnh / ~43 ngày @ 1.0σ) — threshold mặc định 1.0
+   chỉ để theo dõi, chưa đủ tin để size lớn.
 =============================================================================
 """
 
@@ -71,6 +78,11 @@ VAR_STATS_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io/meta
 _VAR_LISTINGS_CACHE = {"ts": 0.0, "listings": None}
 _VAR_CACHE_TTL_S = 8.0  # 1 lần gọi /metadata/stats dùng chung 2 leg trong cùng request
 
+ONDO_API = "https://api.ondoperps.xyz"
+ONDO_CONTRACTS_URL = f"{ONDO_API}/v1/perps/contracts"
+_ONDO_CONTRACTS_CACHE = {"ts": 0.0, "contracts": None}
+_ONDO_CACHE_TTL_S = 8.0
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
@@ -95,12 +107,16 @@ PAIRS = [
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
-        "spread_type": "diff",              # spread = price_A - price_B
-        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-3.2858")),
-        "std": float(_pair_env("SPREAD_STD", "CL", "0.4675")),
+        "spread_type": "diff",              # spread = CL − BRENT ($/bbl)
+        # Hyperliquid 15m: API chỉ giữ ~5000 nến (~52 ngày)
+        # 2026-07-22 05:00 → 2026-09-12 07:15 UTC, 5002 nến
+        # mean -4.4129 / std 0.9297 / min -6.009 / max -1.837
+        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.4129")),
+        "std": float(_pair_env("SPREAD_STD", "CL", "0.9297")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(379.7 / 60 / 24))),
+        # Hold TB @ 1.5σ ≈ 275.9h
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(275.9 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
@@ -133,33 +149,48 @@ PAIRS = [
         # động nhanh, trade quá dày). Chọn 3.0: net PnL $163.08, net/trade
         # $5.62, 29 trades/90 ngày -> mẫu tạm đủ tin cậy. Ngưỡng 3.5 net/trade
         # cao hơn ($9.92) nhưng chỉ 19 trades -> mẫu quá mỏng để ưu tiên mặc định.
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "2")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "2.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
         # Task 3, hold trung bình threshold=2.5: 798 phút -> 798/60/24 ngày
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(798 / 60 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
-    
-    #{
-    #    "id": "xau",
-    #    "label": "XAUT/XAU",
-    #    "venue": "variational",
-    #    "symbol_a": "XAUT",                  # Variational ticker (gold spot perp)
-    #    "symbol_b": "XAU",                 # Variational ticker (Tether Gold perp)
-    #    "spread_type": "diff",              # spread = XAUT - XAU ($/oz), cùng scale
-        # Proxy 1H 60 ngày OKX (PAXG≈XAU, XAUT), 1441 nến:
-        # mean 6.5758 / std 6.1410 / p10 -1.80 / p90 15.30
-    #    "mean": float(_pair_env("SPREAD_MEAN", "XAU", "-6.5758")),
-    #    "std": float(_pair_env("SPREAD_STD", "XAU", "6.1410")),
+    {
+        "id": "xau",
+        "label": "XAUT/XAU",
+        "venue": "variational",
+        "symbol_a": "XAUT",                 # Tether Gold perp
+        "symbol_b": "XAU",                  # gold spot perp
+        "spread_type": "diff",              # spread = XAUT - XAU ($/oz)
+        # Proxy 1H 60 ngày OKX đảo dấu (trước là XAU-XAUT mean +6.5758)
+        # mean -6.5758 / std 6.1410 / p10 -15.30 / p90 1.80
+        "mean": float(_pair_env("SPREAD_MEAN", "XAU", "-6.5758")),
+        "std": float(_pair_env("SPREAD_STD", "XAU", "6.1410")),
         # Expanding-mean robustness: 1.0σ net còn dương, WR cao; 0.5σ phí ăn hết.
         # 1.25σ ít trade hơn nhưng net/trade tốt hơn. Default 1.0.
-    #    "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XAU", "1.0")),
-    #    "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XAU", "0.0")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XAU", "1.0")),
+        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XAU", "0.0")),
         # Hold TB ~73.5h @ 1.0σ (expanding mean)
-    #    "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XAU", str(73.5 / 24))),
-    #    "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XAU", "5000")),
-    #},
-    
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XAU", str(73.5 / 24))),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XAU", "5000")),
+    },
+    {
+        "id": "ondowti",
+        "label": "WTI/BRENT (Ondo)",
+        "venue": "ondo",
+        "symbol_a": "WTI-USD.P",
+        "symbol_b": "BRENT-USD.P",
+        "spread_type": "diff",              # spread = WTI − BRENT ($/bbl)
+        # Ondo 1H, cửa sổ hợp lệ 2026-07-24 → 2026-09-05 (1044 nến).
+        # Brent close=0 trước 2026-07-24 03:00 UTC.
+        "mean": float(_pair_env("SPREAD_MEAN", "ONDOWTI", "-4.4384")),
+        "std": float(_pair_env("SPREAD_STD", "ONDOWTI", "0.9746")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "ONDOWTI", "1.0")),
+        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "ONDOWTI", "0.0")),
+        # Hold TB @ 1.0σ ≈ 454.5h (2 trades / ~43 ngày — mẫu mỏng)
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "ONDOWTI", str(454.5 / 24))),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "ONDOWTI", "5000")),
+    },
 ]
 
 PAIRS_BY_ID = {p["id"]: p for p in PAIRS}
@@ -266,6 +297,66 @@ def fetch_variational_pair(symbol_a: str, symbol_b: str) -> dict:
     }
 
 
+# =============================================================================
+# ONDO PERPS DATA FETCHING
+# Public: GET /v1/perps/contracts (lastPrice + fundingRate)
+# History (backtest): GET /v1/perps/history?symbol=WTIUSD.P
+# =============================================================================
+
+def fetch_ondo_contracts() -> list:
+    now = time.time()
+    cached = _ONDO_CONTRACTS_CACHE["contracts"]
+    if cached is not None and (now - _ONDO_CONTRACTS_CACHE["ts"]) < _ONDO_CACHE_TTL_S:
+        return cached
+    resp = requests.get(ONDO_CONTRACTS_URL, timeout=8)
+    resp.raise_for_status()
+    contracts = resp.json().get("result") or []
+    if not contracts:
+        raise RuntimeError("Ondo /v1/perps/contracts returned empty result")
+    _ONDO_CONTRACTS_CACHE["ts"] = now
+    _ONDO_CONTRACTS_CACHE["contracts"] = contracts
+    return contracts
+
+
+def _ondo_hourly_decimal(contract: dict) -> float:
+    """
+    Ondo `fundingRate` coi như decimal / giờ.
+
+    nextFundingRateTimestamp đang rơi đúng :00 mỗi giờ (vd. 14:00 UTC),
+    không phải chu kỳ 00/08/16 → settle hourly.
+    fundingIntervalDivisions=8 là tham số công thức, không phải 8h settle.
+    """
+    return float(contract.get("fundingRate") or 0.0)
+
+
+def fetch_ondo_pair(symbol_a: str, symbol_b: str) -> dict:
+    contracts = fetch_ondo_contracts()
+    by_mkt = {str(x.get("market")): x for x in contracts}
+    missing = [s for s in (symbol_a, symbol_b) if s not in by_mkt]
+    if missing:
+        raise RuntimeError(f"Ondo contracts missing market(s): {missing}")
+    la, lb = by_mkt[symbol_a], by_mkt[symbol_b]
+
+    def _px(c: dict) -> float:
+        for k in ("lastPrice", "indexPrice"):
+            try:
+                v = float(c.get(k) or 0.0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if v > 0:
+                return v
+        raise RuntimeError(f"Ondo no usable price for {c.get('market')}")
+
+    return {
+        "price_a": _px(la),
+        "price_b": _px(lb),
+        "funding_rates": {
+            symbol_a: _ondo_hourly_decimal(la),
+            symbol_b: _ondo_hourly_decimal(lb),
+        },
+    }
+
+
 def compute_spread(price_a: float, price_b: float, spread_type: str) -> float:
     if spread_type == "logratio":
         return math.log(price_a / price_b)
@@ -283,6 +374,10 @@ def compute_zscore(pair: dict, with_funding: bool) -> dict:
         var = fetch_variational_pair(symbol_a, symbol_b)
         price_a, price_b = var["price_a"], var["price_b"]
         funding_rates = var["funding_rates"] if with_funding else None
+    elif venue == "ondo":
+        ondo = fetch_ondo_pair(symbol_a, symbol_b)
+        price_a, price_b = ondo["price_a"], ondo["price_b"]
+        funding_rates = ondo["funding_rates"] if with_funding else None
     else:
         with ThreadPoolExecutor(max_workers=3) as ex:
             fut_a = ex.submit(fetch_latest_close, symbol_a)
@@ -371,6 +466,8 @@ def evaluate_signal(pair: dict, force_funding_check: bool = False) -> dict:
         funding_rates = stats["funding_rates"]
     elif pair.get("venue") == "variational":
         funding_rates = fetch_variational_pair(pair["symbol_a"], pair["symbol_b"])["funding_rates"]
+    elif pair.get("venue") == "ondo":
+        funding_rates = fetch_ondo_pair(pair["symbol_a"], pair["symbol_b"])["funding_rates"]
     else:
         funding_rates = fetch_funding_rates(pair["symbol_a"], pair["symbol_b"])
     funding = estimate_funding_cost(pair, stats, funding_rates)
@@ -419,8 +516,8 @@ def send_telegram_message(text: str, chat_id: str = None):
 
 
 def _direction_text(pair: dict, z: float) -> str:
-    return (f"🔴 SHORT {pair['symbol_a']} / LONG {pair['symbol_b']})" if z > 0
-            else f"🟢 LONG {pair['symbol_a']} / SHORT {pair['symbol_b']})")
+    return (f"🔴 SHORT SPREAD (Short {pair['symbol_a']} / Long {pair['symbol_b']})" if z > 0
+            else f"🟢 LONG SPREAD (Long {pair['symbol_a']} / Short {pair['symbol_b']})")
 
 
 def build_signal_message(pair: dict, result: dict) -> str:
@@ -430,12 +527,15 @@ def build_signal_message(pair: dict, result: dict) -> str:
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
+        f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
+        f"Spread hiện tại: `{result['spread']:.4f}`\n"
+        f"*Net kỳ vọng: `${result['net_expected']:.2f}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
-        f"Gõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh\n"
-        
+        f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `{ex['exit_spread']:.4f}` "
+        f"(z ≈ `{ex['exit_z']:.2f}`)\n"
+        f"_Bot không tự động báo khi tới điểm đóng — bạn tự theo dõi bằng /check, "
+        f"hoặc đặt take-profit/limit tương ứng ngay khi vào lệnh._"
     )
 
 
@@ -448,56 +548,34 @@ def build_check_message(pair: dict, result: dict) -> str:
     exit_spread = ex.get("exit_spread", pair["mean"])
     exit_z = ex.get("exit_z", pair.get("exit_z", 0.0))
     return (
-        "--------------------------------\n\n"
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
+        f"Z-score: `{z:.2f}` (ngưỡng {pair['threshold']})\n"
+        f"Spread hiện tại: `{result['spread']:.4f}`\n"
+        f"*Net kỳ vọng: `{net_txt}`*\n\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-                f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `{net_txt}`*\n\n"
-        f"Gõ /entry để biết gợi ý vào lệnh"
-        
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"🎯 *Gợi ý đóng lệnh*: khi spread về lại `{exit_spread:.4f}` "
+        f"(z ≈ `{exit_z:.2f}`)"
     )
 
 
 HELP_TEXT = (
     "*PAIRS BOT — MULTI-PAIR*\n"
-    "Đang theo dõi 4 cặp:\n"
+    "Đang theo dõi 5 cặp:\n"
     "• `cl` — CL/BRENTOIL (WTI vs Brent) — Hyperliquid\n"
     "• `xyz100` — XYZ100/SP500 ⚠️ mẫu backtest còn nhỏ, chưa nên trade thật size lớn\n"
     "• `goldsilver` — GOLD/SILVER ⚠️ chỉ có lãi ròng ở ngưỡng z >= 2.5,"
     " mẫu backtest 29 trades/90 ngày — theo dõi sát trước khi tăng size\n"
-    "• `xau` — XAU/XAUT (Variational) ⚠️ mean/std từ proxy 1H 60 ngày,"
-    " mặc định threshold 1.0σ — đối chiếu funding với UI Omni\n\n"
+    "• `xau` — XAUT/XAU (Variational, spread = XAUT − XAU) ⚠️ mean −6.5758,"
+    " mặc định threshold 1.0σ — đối chiếu funding với UI Omni\n"
+    "• `ondowti` — WTI/BRENT (Ondo Perps, spread = WTI − BRENT) ⚠️ mean −4.4384,"
+    " mẫu 2 trades/43 ngày — chỉ theo dõi, chưa size lớn\n\n"
     "Gõ /check để xem trạng thái TẤT CẢ cặp ngay lúc này.\n"
-    "Gõ /check cl, /check xyz100, /check goldsilver hoặc /check xau "
-    "để xem riêng 1 cặp.\n"
+    "Gõ /check cl, /check xyz100, /check goldsilver, /check xau "
+    "hoặc /check ondowti để xem riêng 1 cặp.\n"
     "Tín hiệu tự động (khi đủ điều kiện vào lệnh) sẽ được bot gửi riêng mỗi "
     "5 phút cho từng cặp, không cần bạn phải hỏi."
-)
-
-PAIRS_TEXT = (
-    "*GỢI Ý VÀO LỆNH*\n\n"
-    "🟢 LONG BRENTOIL / SHORT CL khi Net PnL <= 60 \n"
-    "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n\n"
-
-    "Chia vốn thành 4-5 phần, cứ 10 giá dca 2k/leg\n"
-    "Lưu ý: Net PnL dao động từ *30 đến 150*, chỉ vào lệnh khi Net PnL <= 60 hoặc >= 90.\n"
-    "--------------------------------\n"
-    "🟢 LONG QQQ / SHORT US500 khi Net PnL >= 190 \n"
-    "🔴 SHORT QQQ / LONG US500 khi Net PnL <= 160 \n\n"
-    "Chia vốn thành 4-5 phần, cứ 20 - 30 giá dca 2k/leg\n"
-    "Lưu ý: Net PnL dao động từ *120 đến 350*, chỉ vào lệnh khi Net PnL >= 190 hoặc <= 160.\n"
-    "--------------------------------\n"
-    "🟢 LONG GOLD / SHORT SILVER khi Net PnL >= 150 \n"
-    "🔴 SHORT GOLD / LONG SILVER khi Net PnL <= 50 \n\n"
-    "Chia vốn thành 4-5 phần, cứ 35 - 45 giá dca 2k/leg\n"
-    "Lưu ý: Net PnL dao động từ *20 đến 200*, chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n\n\n"
-    "*Giải thích*:\n"
-    "2k/leg: 2k long và 2k short\n"
-    "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg\n\n\n"
-
-    "*LUÔN KỶ LUẬT KHI VÀO LỆNH*"
 )
 
 
@@ -541,15 +619,19 @@ def scan_bot():
 
     results = {}
     errors = {}
+    sections = []
     for pair in PAIRS:
         try:
-            result = evaluate_signal(pair, force_funding_check=False)
+            result = evaluate_signal(pair, force_funding_check=True)
             results[pair["id"]] = result_to_json(result)
-            if result["should_enter"]:
-                send_telegram_message(build_signal_message(pair, result))
+            sections.append(build_check_message(pair, result))
         except Exception as e:
             print(f"[ERROR] scan_bot pair={pair['id']}: {e}")
             errors[pair["id"]] = str(e)
+            sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
+
+    if sections:
+        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections))
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
@@ -588,8 +670,6 @@ def telegram_webhook():
     try:
         if command in ("/start", "/help"):
             send_telegram_message(HELP_TEXT, chat_id=chat_id)
-        elif command in ("/entry"):
-            send_telegram_message(PAIRS_TEXT, chat_id=chat_id)
         elif command == "/check":
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
