@@ -395,7 +395,7 @@ HELP_TEXT = (
 )
 
 PAIRS_TEXT = (
-    "*GỢI Ý VÀO LỆNH* /check\n\n"
+    "*GỢI Ý VÀO LỆNH*\n\n"
     "🟢 LONG BRENTOIL / SHORT CL khi Net PnL <= 60 \n"
     "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n\n"
     "Chia vốn thành 4-5 phần, cứ 10 giá dca 2k/leg\n"
@@ -472,7 +472,7 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("*[SCAN]* /check\n\n" + "\n\n".join(sections))
+        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại")
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
@@ -528,11 +528,11 @@ def telegram_webhook():
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
                     sections.append(build_check_message(pair, result))
-                msg = "*[CHECK] PAIRS STATUS* /check \n\n" + "\n\n".join(sections)
+                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại"
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
-                "Lệnh không hợp lệ. Gõ /check, /check <cl|xyz100|goldsilver> hoặc /entry.",
+                "Lệnh không hợp lệ. Gõ /check, /check <pair_id> hoặc /entry.",
                 chat_id=chat_id,
             )
     except Exception as e:
