@@ -472,7 +472,7 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections))
+        send_telegram_message("*[SCAN]* /check\n\n" + "\n\n".join(sections))
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
