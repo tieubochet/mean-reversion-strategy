@@ -378,7 +378,6 @@ def build_check_message(pair: dict, result: dict) -> str:
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
         f"*Bú Net PnL: `{net_txt}`*\n\n"
-        f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
 
@@ -472,7 +471,7 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại")
+        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh")
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
@@ -528,7 +527,7 @@ def telegram_webhook():
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
                     sections.append(build_check_message(pair, result))
-                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại"
+                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
