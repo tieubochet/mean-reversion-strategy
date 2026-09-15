@@ -395,7 +395,7 @@ HELP_TEXT = (
 )
 
 PAIRS_TEXT = (
-    "*GỢI Ý VÀO LỆNH*\n\n"
+    "*GỢI Ý VÀO LỆNH* /check\n\n"
     "🟢 LONG BRENTOIL / SHORT CL khi Net PnL <= 60 \n"
     "🔴 SHORT BRENTOIL / LONG CL khi Net PnL >= 90 \n\n"
     "Chia vốn thành 4-5 phần, cứ 10 giá dca 2k/leg\n"
@@ -528,7 +528,7 @@ def telegram_webhook():
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
                     sections.append(build_check_message(pair, result))
-                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections)
+                msg = "*[CHECK] PAIRS STATUS* /check \n\n" + "\n\n".join(sections)
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
