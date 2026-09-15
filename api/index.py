@@ -377,7 +377,7 @@ def build_check_message(pair: dict, result: dict) -> str:
         f"Spread: `{result['spread']:.4f}`\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `{net_txt}`*\n"
+        f"*Bú Net PnL: `{net_txt}`*"
     )
 
 
@@ -471,7 +471,7 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh")
+        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh")
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
