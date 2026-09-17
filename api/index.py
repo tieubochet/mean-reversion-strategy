@@ -39,6 +39,7 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
 import os
 import math
 import time
+from datetime import datetime, timezone, timedelta
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
@@ -82,12 +83,20 @@ PAIRS = [
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
-        "spread_type": "diff",              # spread = price_A - price_B
-        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-3.2858")),
-        "std": float(_pair_env("SPREAD_STD", "CL", "0.4675")),
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.5")),
+        "spread_type": "diff",
+        # Hyperliquid 1H 90 ngày: 2026-06-19 → 2026-09-17, 2164 nến
+        # mean -4.1789 / std 0.8487 / min -6.009 / max -1.897
+        # Mid range tối ưu: 1.3σ ≈ $1.10 (5 lệnh đóng, net $357, $71/lệnh)
+        # Full range: 2.0σ ≈ $1.70 (gần biên min/max)
+        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.1789")),
+        "std": float(_pair_env("SPREAD_STD", "CL", "0.8487")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.3")),
+        "mid_z": float(_pair_env("MID_Z", "CL", "1.3")),
+        "full_z": float(_pair_env("FULL_Z", "CL", "2.0")),
+        "range_min": float(_pair_env("RANGE_MIN", "CL", "-6.009")),
+        "range_max": float(_pair_env("RANGE_MAX", "CL", "-1.897")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(379.7 / 60 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(270.0 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
@@ -355,6 +364,51 @@ def _direction_text(pair: dict, z: float) -> str:
     return f"🟢 LONG {pair['symbol_a']} / SHORT {pair['symbol_b']}"
 
 
+def classify_range_zone(pair: dict, result: dict):
+    """MID nếu |z| >= mid_z; FULL nếu |z| >= full_z hoặc chạm min/max 90 ngày."""
+    mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
+    full_z = float(pair.get("full_z", 2.0))
+    az = abs(result["z"])
+    sp = result["spread"]
+    rmin = pair.get("range_min")
+    rmax = pair.get("range_max")
+    at_extreme = False
+    if rmin is not None and rmax is not None:
+        # trong 0.15$/bbl so với biên quan sát
+        at_extreme = sp <= float(rmin) + 0.15 or sp >= float(rmax) - 0.15
+    if az >= full_z or at_extreme:
+        return "FULL"
+    if az >= mid_z:
+        return "MID"
+    return None
+
+
+def build_range_entry_message(pair: dict, result: dict, zone: str) -> str:
+    """Báo vào lệnh khi đang ở mid/full range: net từ điểm vào → mean, lúc đóng."""
+    z = result["z"]
+    net = result.get("net_expected")
+    net_txt = f"${net:.2f}" if net is not None else "n/a"
+    exit_spread = (result.get("exit_level") or {}).get("exit_spread", pair["mean"])
+    hold_h = pair["expected_hold_days"] * 24
+    if zone == "FULL":
+        hold_h = max(hold_h, 292.0)
+    out_dt = datetime.now(timezone.utc) + timedelta(hours=hold_h)
+    zone_label = "FULL RANGE" if zone == "FULL" else "MID RANGE"
+    mid_lvl = pair["mean"] + pair.get("mid_z", 1.3) * pair["std"] * (1 if z > 0 else -1)
+    full_lvl = pair["mean"] + pair.get("full_z", 2.0) * pair["std"] * (1 if z > 0 else -1)
+    return (
+        f"*CL/BRENT — {zone_label}*\n"
+        f"VÀO LỆNH ngay\n"
+        f"{_direction_text(pair, z)}\n\n"
+        f"Spread vào: `{result['spread']:.4f}` (z `{z:.2f}`)\n"
+        f"Giá CL: `${result['price_A']:.2f}` | Brent: `${result['price_B']:.2f}`\n"
+        f"Mốc mid: `{mid_lvl:.3f}` | Mốc full: `{full_lvl:.3f}`\n\n"
+        f"*Net PnL kỳ vọng (từ điểm vào → mean): `{net_txt}`*\n\n"
+        f"Đóng lệnh khi spread về `{exit_spread:.4f}` (mean)\n"
+        f"Hold TB ~{hold_h:.0f}h → out ước tính `{out_dt.strftime('%Y-%m-%d %H:%M')} UTC`"
+    )
+
+
 def build_signal_message(pair: dict, result: dict) -> str:
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
@@ -377,7 +431,8 @@ def build_check_message(pair: dict, result: dict) -> str:
         f"Spread: `{result['spread']:.4f}`\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `{net_txt}`*"
+        f"*Bú Net PnL: `{net_txt}`*\n\n"
+        f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
 
@@ -464,14 +519,18 @@ def scan_bot():
         try:
             result = evaluate_signal(pair, force_funding_check=True)
             results[pair["id"]] = result_to_json(result)
-            sections.append(build_check_message(pair, result))
+            zone = classify_range_zone(pair, result) if pair.get("id") == "cl" else None
+            if zone:
+                sections.append(build_range_entry_message(pair, result, zone))
+            else:
+                sections.append(build_check_message(pair, result))
         except Exception as e:
             print(f"[ERROR] scan_bot pair={pair['id']}: {e}")
             errors[pair["id"]] = str(e)
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh")
+        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections))
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
@@ -514,7 +573,12 @@ def telegram_webhook():
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
                 result = evaluate_signal(pair, force_funding_check=True)
-                msg = f"*[CHECK] {pair['label']}*\n\n" + build_check_message(pair, result)
+                zone = classify_range_zone(pair, result) if pair.get("id") == "cl" else None
+                body = (
+                    build_range_entry_message(pair, result, zone)
+                    if zone else build_check_message(pair, result)
+                )
+                msg = f"*[CHECK] {pair['label']}*\n\n" + body
                 send_telegram_message(msg, chat_id=chat_id)
             elif arg:
                 send_telegram_message(
@@ -526,12 +590,16 @@ def telegram_webhook():
                 sections = []
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
-                    sections.append(build_check_message(pair, result))
-                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
+                    zone = classify_range_zone(pair, result) if pair.get("id") == "cl" else None
+                    if zone:
+                        sections.append(build_range_entry_message(pair, result, zone))
+                    else:
+                        sections.append(build_check_message(pair, result))
+                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections)
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
-                "Lệnh không hợp lệ. Gõ /check, /check <pair_id> hoặc /entry.",
+                "Lệnh không hợp lệ. Gõ /check, /check <cl|xyz100|goldsilver> hoặc /entry.",
                 chat_id=chat_id,
             )
     except Exception as e:
