@@ -383,29 +383,56 @@ def classify_range_zone(pair: dict, result: dict):
     return None
 
 
-def build_range_entry_message(pair: dict, result: dict, zone: str) -> str:
-    """Báo vào lệnh khi đang ở mid/full range: net từ điểm vào → mean, lúc đóng."""
+def build_status_message(pair: dict, result: dict) -> str:
+    """Luôn báo đủ trạng thái. CL: WAIT / MID / FULL. Cặp khác: vào hoặc chưa nên vào."""
     z = result["z"]
     net = result.get("net_expected")
     net_txt = f"${net:.2f}" if net is not None else "n/a"
     exit_spread = (result.get("exit_level") or {}).get("exit_spread", pair["mean"])
-    hold_h = pair["expected_hold_days"] * 24
-    if zone == "FULL":
-        hold_h = max(hold_h, 292.0)
-    out_dt = datetime.now(timezone.utc) + timedelta(hours=hold_h)
-    zone_label = "FULL RANGE" if zone == "FULL" else "MID RANGE"
-    mid_lvl = pair["mean"] + pair.get("mid_z", 1.3) * pair["std"] * (1 if z > 0 else -1)
-    full_lvl = pair["mean"] + pair.get("full_z", 2.0) * pair["std"] * (1 if z > 0 else -1)
+    prices = (
+        f"Spread: `{result['spread']:.4f}` (z `{z:.2f}`)\n"
+        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`"
+    )
+
+    if pair.get("id") == "cl":
+        zone = classify_range_zone(pair, result)
+        mid_z = float(pair.get("mid_z", 1.3))
+        full_z = float(pair.get("full_z", 2.0))
+        sign = 1 if z > 0 else -1
+        mid_lvl = pair["mean"] + mid_z * pair["std"] * sign
+        full_lvl = pair["mean"] + full_z * pair["std"] * sign
+        hold_h = pair["expected_hold_days"] * 24
+        if zone == "FULL":
+            hold_h = max(hold_h, 292.0)
+        out_dt = datetime.now(timezone.utc) + timedelta(hours=hold_h)
+        if zone == "FULL":
+            action = "FULL RANGE — VÀO LỆNH"
+        elif zone == "MID":
+            action = "MID RANGE — VÀO LỆNH"
+        else:
+            action = f"CHƯA NÊN VÀO — |z| `{abs(z):.2f}` < mid `{mid_z:.1f}`"
+        return (
+            "--------------------------------\n\n"
+            f"*CL/BRENT — {action}*\n"
+            f"{_direction_text(pair, z)}\n\n"
+            f"{prices}\n"
+            f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.3f}` | Full `{full_lvl:.3f}`\n\n"
+            f"*Net PnL nếu vào giờ → về mean: `{net_txt}`*\n"
+            f"Đóng khi spread về `{exit_spread:.4f}`\n"
+            f"Hold TB ~{hold_h:.0f}h → out ước tính `{out_dt.strftime('%Y-%m-%d %H:%M')} UTC`"
+        )
+
+    can_enter = abs(z) >= pair.get("threshold", 99)
+    action = "VÀO LỆNH" if can_enter else "CHƯA NÊN VÀO"
     return (
-        f"*CL/BRENT — {zone_label}*\n"
-        f"VÀO LỆNH ngay\n"
+        "--------------------------------\n\n"
+        f"*PAIRS SIGNAL — {pair['label']}*\n"
+        f"{action}\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Spread vào: `{result['spread']:.4f}` (z `{z:.2f}`)\n"
-        f"Giá CL: `${result['price_A']:.2f}` | Brent: `${result['price_B']:.2f}`\n"
-        f"Mốc mid: `{mid_lvl:.3f}` | Mốc full: `{full_lvl:.3f}`\n\n"
-        f"*Net PnL kỳ vọng (từ điểm vào → mean): `{net_txt}`*\n\n"
-        f"Đóng lệnh khi spread về `{exit_spread:.4f}` (mean)\n"
-        f"Hold TB ~{hold_h:.0f}h → out ước tính `{out_dt.strftime('%Y-%m-%d %H:%M')} UTC`"
+        f"{prices}\n\n"
+        f"*Bú Net PnL: `{net_txt}`*\n\n"
+        f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
 
@@ -519,11 +546,7 @@ def scan_bot():
         try:
             result = evaluate_signal(pair, force_funding_check=True)
             results[pair["id"]] = result_to_json(result)
-            zone = classify_range_zone(pair, result) if pair.get("id") == "cl" else None
-            if zone:
-                sections.append(build_range_entry_message(pair, result, zone))
-            else:
-                sections.append(build_check_message(pair, result))
+            sections.append(build_status_message(pair, result))
         except Exception as e:
             print(f"[ERROR] scan_bot pair={pair['id']}: {e}")
             errors[pair["id"]] = str(e)
@@ -573,12 +596,7 @@ def telegram_webhook():
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
                 result = evaluate_signal(pair, force_funding_check=True)
-                zone = classify_range_zone(pair, result) if pair.get("id") == "cl" else None
-                body = (
-                    build_range_entry_message(pair, result, zone)
-                    if zone else build_check_message(pair, result)
-                )
-                msg = f"*[CHECK] {pair['label']}*\n\n" + body
+                msg = f"*[CHECK] {pair['label']}*\n\n" + build_status_message(pair, result)
                 send_telegram_message(msg, chat_id=chat_id)
             elif arg:
                 send_telegram_message(
@@ -590,11 +608,7 @@ def telegram_webhook():
                 sections = []
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
-                    zone = classify_range_zone(pair, result) if pair.get("id") == "cl" else None
-                    if zone:
-                        sections.append(build_range_entry_message(pair, result, zone))
-                    else:
-                        sections.append(build_check_message(pair, result))
+                    sections.append(build_status_message(pair, result))
                 msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections)
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
