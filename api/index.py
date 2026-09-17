@@ -97,6 +97,7 @@ PAIRS = [
         "range_max": float(_pair_env("RANGE_MAX", "CL", "-1.897")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(270.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "CL", "292")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
@@ -106,11 +107,20 @@ PAIRS = [
         "symbol_a": "xyz:XYZ100",
         "symbol_b": "xyz:SP500",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.3805")),
-        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.0118")),
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "2.25")),
+        # Hyperliquid 1H 90 ngày: 2026-06-19 → 2026-09-17, 2164 nến
+        # ln(XYZ100/SP500) mean 1.352480 / std 0.019752 / min 1.3093 / max 1.4034
+        # Mid 1.5σ: 2 lệnh đóng, net $375, $187/lệnh, hold ~567h
+        # Full 2.1σ: 2 lệnh, net $442, $221/lệnh, hold ~549h
+        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.352480")),
+        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.019752")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "1.5")),
+        "mid_z": float(_pair_env("MID_Z", "XYZ100", "1.5")),
+        "full_z": float(_pair_env("FULL_Z", "XYZ100", "2.1")),
+        "range_min": float(_pair_env("RANGE_MIN", "XYZ100", "1.3093")),
+        "range_max": float(_pair_env("RANGE_MAX", "XYZ100", "1.4034")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XYZ100", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(56 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(566.5 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "XYZ100", "549")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XYZ100", "5000")),
     },
     {
@@ -120,11 +130,20 @@ PAIRS = [
         "symbol_a": "xyz:GOLD",
         "symbol_b": "xyz:SILVER",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.23056")),
-        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.020552")),
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "2")),
+        # Hyperliquid 1H 90 ngày: 2026-06-19 → 2026-09-17, 2164 nến
+        # ln(GOLD/SILVER) mean 4.220096 / std 0.024484 / min 4.1438 / max 4.2829
+        # Mid 1.4σ: 5 lệnh, net $1130, $226/lệnh, hold ~227h
+        # Full 2.5σ: 2 lệnh, net $624, $312/lệnh, hold ~283h
+        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.220096")),
+        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.024484")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "1.4")),
+        "mid_z": float(_pair_env("MID_Z", "GOLDSILVER", "1.4")),
+        "full_z": float(_pair_env("FULL_Z", "GOLDSILVER", "2.5")),
+        "range_min": float(_pair_env("RANGE_MIN", "GOLDSILVER", "4.1438")),
+        "range_max": float(_pair_env("RANGE_MAX", "GOLDSILVER", "4.2829")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(798 / 60 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(227.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "GOLDSILVER", "282.5")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
     # xau tạm tắt
@@ -395,32 +414,32 @@ def build_status_message(pair: dict, result: dict) -> str:
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`"
     )
 
-    if pair.get("id") == "cl":
+    if pair.get("mid_z") is not None:
         zone = classify_range_zone(pair, result)
-        mid_z = float(pair.get("mid_z", 1.3))
+        mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
         full_z = float(pair.get("full_z", 2.0))
         sign = 1 if z > 0 else -1
         mid_lvl = pair["mean"] + mid_z * pair["std"] * sign
         full_lvl = pair["mean"] + full_z * pair["std"] * sign
         hold_h = pair["expected_hold_days"] * 24
         if zone == "FULL":
-            hold_h = max(hold_h, 292.0)
+            hold_h = float(pair.get("full_hold_hours", hold_h))
         out_dt = datetime.now(timezone.utc) + timedelta(hours=hold_h)
         if zone == "FULL":
             action = "FULL RANGE — VÀO LỆNH"
         elif zone == "MID":
             action = "MID RANGE — VÀO LỆNH"
         else:
-            action = f"CHƯA NÊN VÀO"
+            action = f"CHƯA NÊN VÀO — |z| `{abs(z):.2f}` < mid `{mid_z:.1f}`"
         return (
             "--------------------------------\n\n"
-            f"*CL/BRENT — {action}*\n"
+            f"*{pair['label']} — {action}*\n"
             f"{_direction_text(pair, z)}\n\n"
             f"{prices}\n"
-            f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.3f}` | Full `{full_lvl:.3f}`\n\n"
+            f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.4f}` | Full `{full_lvl:.4f}`\n\n"
             f"*Net PnL nếu vào giờ → về mean: `{net_txt}`*\n"
             f"Đóng khi spread về `{exit_spread:.4f}`\n"
-            f"Hold TB ~{hold_h:.0f}h"
+            f"Hold TB ~{hold_h:.0f}h → out ước tính `{out_dt.strftime('%Y-%m-%d %H:%M')} UTC`"
         )
 
     can_enter = abs(z) >= pair.get("threshold", 99)
