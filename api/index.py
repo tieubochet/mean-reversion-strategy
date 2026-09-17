@@ -627,7 +627,7 @@ def telegram_webhook():
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
                     sections.append(build_status_message(pair, result))
-                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections)
+                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh."
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
