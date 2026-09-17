@@ -79,7 +79,7 @@ def _pair_env(key: str, suffix: str, default: str) -> str:
 PAIRS = [
     {
         "id": "cl",
-        "label": "CL/BRENT",
+        "label": "CL/BRENTOIL",
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
@@ -93,7 +93,6 @@ PAIRS = [
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.3")),
         "mid_z": float(_pair_env("MID_Z", "CL", "1.3")),
         "full_z": float(_pair_env("FULL_Z", "CL", "2.0")),
-        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "CL", "0.03")),
         "range_min": float(_pair_env("RANGE_MIN", "CL", "-6.009")),
         "range_max": float(_pair_env("RANGE_MAX", "CL", "-1.897")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
@@ -117,7 +116,6 @@ PAIRS = [
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "1.5")),
         "mid_z": float(_pair_env("MID_Z", "XYZ100", "1.5")),
         "full_z": float(_pair_env("FULL_Z", "XYZ100", "2.1")),
-        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "XYZ100", "0.03")),
         "range_min": float(_pair_env("RANGE_MIN", "XYZ100", "1.3093")),
         "range_max": float(_pair_env("RANGE_MAX", "XYZ100", "1.4034")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XYZ100", "0.0")),
@@ -141,7 +139,6 @@ PAIRS = [
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "1.4")),
         "mid_z": float(_pair_env("MID_Z", "GOLDSILVER", "1.4")),
         "full_z": float(_pair_env("FULL_Z", "GOLDSILVER", "2.5")),
-        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "GOLDSILVER", "0.03")),
         "range_min": float(_pair_env("RANGE_MIN", "GOLDSILVER", "4.1438")),
         "range_max": float(_pair_env("RANGE_MAX", "GOLDSILVER", "4.2829")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
@@ -386,34 +383,19 @@ def _direction_text(pair: dict, z: float) -> str:
     return f"🟢 LONG {pair['symbol_a']} / SHORT {pair['symbol_b']}"
 
 
-def _near_spread_level(spread: float, level: float, pair: dict, pct: float) -> bool:
-    """True nếu spread đang cách mốc `level` khoảng `pct` (mặc định 3%)."""
-    if level is None:
-        return False
-    level = float(level)
-    if pair.get("spread_type") == "logratio":
-        return abs(spread - level) <= math.log(1.0 + pct)
-    denom = max(abs(level), 1e-9)
-    return abs(spread - level) / denom <= pct
-
-
 def classify_range_zone(pair: dict, result: dict):
-    """MID nếu |z| >= mid_z. FULL chỉ khi spread cách mốc full/min/max ~3%."""
+    """MID nếu |z| >= mid_z; FULL nếu |z| >= full_z hoặc chạm min/max 90 ngày."""
     mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
     full_z = float(pair.get("full_z", 2.0))
-    pct = float(pair.get("full_near_pct", 0.03))
     az = abs(result["z"])
     sp = result["spread"]
-    full_hi = pair["mean"] + full_z * pair["std"]
-    full_lo = pair["mean"] - full_z * pair["std"]
-    levels = [full_hi, full_lo]
-    if pair.get("range_min") is not None:
-        levels.append(pair["range_min"])
-    if pair.get("range_max") is not None:
-        levels.append(pair["range_max"])
-    at_full_moc = any(_near_spread_level(sp, lv, pair, pct) for lv in levels)
-    # FULL chỉ khi vừa đủ full_z vừa đang sát mốc (~3%). Tránh gắn FULL khi z còn nhỏ.
-    if az >= full_z and at_full_moc:
+    rmin = pair.get("range_min")
+    rmax = pair.get("range_max")
+    at_extreme = False
+    if rmin is not None and rmax is not None:
+        # trong 0.15$/bbl so với biên quan sát
+        at_extreme = sp <= float(rmin) + 0.15 or sp >= float(rmax) - 0.15
+    if az >= full_z or at_extreme:
         return "FULL"
     if az >= mid_z:
         return "MID"
@@ -421,46 +403,82 @@ def classify_range_zone(pair: dict, result: dict):
 
 
 def build_status_message(pair: dict, result: dict) -> str:
+    """Luôn báo đủ trạng thái. CL: WAIT / MID / FULL. Cặp khác: vào hoặc chưa nên vào."""
     z = result["z"]
     net = result.get("net_expected")
     net_txt = f"${net:.2f}" if net is not None else "n/a"
     exit_spread = (result.get("exit_level") or {}).get("exit_spread", pair["mean"])
-    mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
-    full_z = float(pair.get("full_z", mid_z + 0.7))
-    sign = 1 if z > 0 else -1
-    mid_lvl = pair["mean"] + mid_z * pair["std"] * sign
-    full_lvl = pair["mean"] + full_z * pair["std"] * sign
-    hold_h = pair["expected_hold_days"] * 24
-    zone = classify_range_zone(pair, result) if pair.get("mid_z") is not None else (
-        "MID" if abs(z) >= pair.get("threshold", 99) else None
+    prices = (
+        f"Spread: `{result['spread']:.4f}` (z `{z:.2f}`)\n"
+        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`"
     )
-    if zone == "FULL":
-        action = "FULL RANGE — VÀO LỆNH"
-        hold_h = float(pair.get("full_hold_hours", hold_h))
-    elif zone == "MID":
-        action = "MID RANGE — VÀO LỆNH"
-    else:
-        action = "CHƯA NÊN VÀO"
+
+    if pair.get("mid_z") is not None:
+        zone = classify_range_zone(pair, result)
+        mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
+        full_z = float(pair.get("full_z", 2.0))
+        sign = 1 if z > 0 else -1
+        mid_lvl = pair["mean"] + mid_z * pair["std"] * sign
+        full_lvl = pair["mean"] + full_z * pair["std"] * sign
+        hold_h = pair["expected_hold_days"] * 24
+        if zone == "FULL":
+            hold_h = float(pair.get("full_hold_hours", hold_h))
+        out_dt = datetime.now(timezone.utc) + timedelta(hours=hold_h)
+        if zone == "FULL":
+            action = "FULL RANGE — VÀO LỆNH"
+        elif zone == "MID":
+            action = "MID RANGE — VÀO LỆNH"
+        else:
+            action = f"CHƯA NÊN VÀO"
+        return (
+            "--------------------------------\n\n"
+            f"*CL/BRENT — {action}*\n"
+            f"{_direction_text(pair, z)}\n\n"
+            f"{prices}\n"
+            f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.3f}` | Full `{full_lvl:.3f}`\n\n"
+            f"*Net PnL nếu vào giờ → về mean: `{net_txt}`*\n"
+            f"Đóng khi spread về `{exit_spread:.4f}`\n"
+            f"Hold TB ~{hold_h:.0f}h"
+        )
+
+    can_enter = abs(z) >= pair.get("threshold", 99)
+    action = "VÀO LỆNH" if can_enter else "CHƯA NÊN VÀO"
     return (
         "--------------------------------\n\n"
-        f"{pair['label']} — {action}\n"
+        f"*PAIRS SIGNAL — {pair['label']}*\n"
+        f"{action}\n"
         f"{_direction_text(pair, z)}\n\n"
-        f"Spread: {result['spread']:.4f}\n"
-        f"Giá {pair['symbol_a']}: ${result['price_A']:.2f} | "
-        f"Giá {pair['symbol_b']}: ${result['price_B']:.2f}\n"
-        f"Mean {pair['mean']:.4f} | Mid {mid_lvl:.3f} | Full {full_lvl:.3f}\n\n"
-        f"Net PnL nếu vào giờ → về mean: `{net_txt}`\n"
-        f"Đóng khi spread về {exit_spread:.4f}\n"
-        f"Hold TB ~{hold_h:.0f}h"
+        f"{prices}\n\n"
+        f"*Bú Net PnL: `{net_txt}`*\n\n"
+        f"Gõ /entry để biết gợi ý vào lệnh"
     )
 
 
 def build_signal_message(pair: dict, result: dict) -> str:
-    return build_status_message(pair, result)
+    return (
+        f"*PAIRS SIGNAL — {pair['label']}*\n"
+        f"{_direction_text(pair, result['z'])}\n\n"
+        f"Spread: `{result['spread']:.4f}`\n"
+        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
+    )
 
 
 def build_check_message(pair: dict, result: dict) -> str:
-    return build_status_message(pair, result)
+    net = result.get("net_expected")
+    net_txt = f"${net:.2f}" if net is not None else "n/a"
+    return (
+        "--------------------------------\n\n"
+        f"*PAIRS SIGNAL — {pair['label']}*\n"
+        f"{_direction_text(pair, result['z'])}\n\n"
+        f"Spread: `{result['spread']:.4f}`\n"
+        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
+        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
+        f"*Bú Net PnL: `{net_txt}`*\n\n"
+        f"Gõ /entry để biết gợi ý vào lệnh"
+    )
 
 
 HELP_TEXT = (
@@ -553,11 +571,7 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message(
-            "[SCAN]\n\n"
-            + "\n\n".join(sections)
-            + "\n\nGõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh"
-        )
+        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh.")
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
@@ -600,7 +614,8 @@ def telegram_webhook():
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
                 result = evaluate_signal(pair, force_funding_check=True)
-                send_telegram_message(build_status_message(pair, result), chat_id=chat_id)
+                msg = f"*[CHECK] {pair['label']}*\n\n" + build_status_message(pair, result)
+                send_telegram_message(msg, chat_id=chat_id)
             elif arg:
                 send_telegram_message(
                     f"Không tìm thấy cặp `{arg}`. Các cặp hợp lệ: "
@@ -612,7 +627,8 @@ def telegram_webhook():
                 for pair in PAIRS:
                     result = evaluate_signal(pair, force_funding_check=True)
                     sections.append(build_status_message(pair, result))
-                send_telegram_message("\n\n".join(sections), chat_id=chat_id)
+                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\nGõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh."
+                send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
                 "Lệnh không hợp lệ. Gõ /check, /check <cl|xyz100|goldsilver> hoặc /entry.",
