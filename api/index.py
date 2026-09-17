@@ -411,7 +411,7 @@ def build_status_message(pair: dict, result: dict) -> str:
         elif zone == "MID":
             action = "MID RANGE — VÀO LỆNH"
         else:
-            action = f"CHƯA NÊN VÀO — |z| `{abs(z):.2f}` < mid `{mid_z:.1f}`"
+            action = f"CHƯA NÊN VÀO"
         return (
             "--------------------------------\n\n"
             f"*CL/BRENT — {action}*\n"
@@ -420,7 +420,8 @@ def build_status_message(pair: dict, result: dict) -> str:
             f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.3f}` | Full `{full_lvl:.3f}`\n\n"
             f"*Net PnL nếu vào giờ → về mean: `{net_txt}`*\n"
             f"Đóng khi spread về `{exit_spread:.4f}`\n"
-            f"Hold TB ~{hold_h:.0f}h → out ước tính `{out_dt.strftime('%Y-%m-%d %H:%M')} UTC`"
+            f"Hold TB ~{hold_h:.0f}h\n\n"
+            f"Gõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
         )
 
     can_enter = abs(z) >= pair.get("threshold", 99)
