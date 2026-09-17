@@ -79,7 +79,7 @@ def _pair_env(key: str, suffix: str, default: str) -> str:
 PAIRS = [
     {
         "id": "cl",
-        "label": "CL/BRENTOIL",
+        "label": "CL/BRENT",
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
@@ -412,7 +412,8 @@ def classify_range_zone(pair: dict, result: dict):
     if pair.get("range_max") is not None:
         levels.append(pair["range_max"])
     at_full_moc = any(_near_spread_level(sp, lv, pair, pct) for lv in levels)
-    if at_full_moc:
+    # FULL chỉ khi vừa đủ full_z vừa đang sát mốc (~3%). Tránh gắn FULL khi z còn nhỏ.
+    if az >= full_z and at_full_moc:
         return "FULL"
     if az >= mid_z:
         return "MID"
@@ -441,6 +442,7 @@ def build_status_message(pair: dict, result: dict) -> str:
     else:
         action = "CHƯA NÊN VÀO"
     return (
+        "--------------------------------\n\n"
         f"{pair['label']} — {action}\n"
         f"{_direction_text(pair, z)}\n\n"
         f"Spread: {result['spread']:.4f}\n"
@@ -454,30 +456,11 @@ def build_status_message(pair: dict, result: dict) -> str:
 
 
 def build_signal_message(pair: dict, result: dict) -> str:
-    return (
-        f"*PAIRS SIGNAL — {pair['label']}*\n"
-        f"{_direction_text(pair, result['z'])}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
-        f"Gõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh"
-    )
+    return build_status_message(pair, result)
 
 
 def build_check_message(pair: dict, result: dict) -> str:
-    net = result.get("net_expected")
-    net_txt = f"${net:.2f}" if net is not None else "n/a"
-    return (
-        "--------------------------------\n\n"
-        f"*PAIRS SIGNAL — {pair['label']}*\n"
-        f"{_direction_text(pair, result['z'])}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `{net_txt}`*\n\n"
-        f"Gõ /entry để biết gợi ý vào lệnh"
-    )
+    return build_status_message(pair, result)
 
 
 HELP_TEXT = (
@@ -570,7 +553,11 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("\n\n".join(sections))
+        send_telegram_message(
+            "[SCAN]\n\n"
+            + "\n\n".join(sections)
+            + "\n\nGõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh"
+        )
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
