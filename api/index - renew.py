@@ -18,9 +18,7 @@ thật /api hay /api/webhook nhờ vercel.json rewrites).
 CẶP ĐANG THEO DÕI:
     1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B ($/bbl)
                     nguồn: Hyperliquid HIP-3 (xyz)
-                    params + thông báo MID/FULL lấy từ index.py
-                    mean=-4.1789 std=0.8487 mid_z=1.3 full_z=2.0
-                    range [-6.009, -1.897] | hold 270h / full 292h
+                    mean/std từ nến 15m ~52 ngày (2026-07-22 → 2026-09-12)
     2. xyz100     — xyz:XYZ100 vs xyz:SP500       — spread = ln(price_A / price_B)
                     nguồn: Hyperliquid HIP-3 (xyz)
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
@@ -35,8 +33,6 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER), tất cả có default hợp lý:
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
            EXIT_Z_THRESHOLD_<X>, EXPECTED_HOLD_DAYS_<X>, CAPITAL_PER_LEG_<X>
-    Riêng CL (từ index.py): MID_Z_CL, FULL_Z_CL, FULL_NEAR_PCT_CL,
-           RANGE_MIN_CL, RANGE_MAX_CL, FULL_HOLD_HOURS_CL
 =============================================================================
 """
 
@@ -82,22 +78,16 @@ def _pair_env(key: str, suffix: str, default: str) -> str:
 PAIRS = [
     {
         "id": "cl",
-        "label": "CL/BRENT",
+        "label": "CL/BRENTOIL",
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
         "spread_type": "diff",              # spread = price_A - price_B
-        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.1789")),
-        "std": float(_pair_env("SPREAD_STD", "CL", "0.8487")),
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.3")),
-        "mid_z": float(_pair_env("MID_Z", "CL", "1.3")),
-        "full_z": float(_pair_env("FULL_Z", "CL", "2.0")),
-        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "CL", "0.03")),
-        "range_min": float(_pair_env("RANGE_MIN", "CL", "-6.009")),
-        "range_max": float(_pair_env("RANGE_MAX", "CL", "-1.897")),
+        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-3.2858")),
+        "std": float(_pair_env("SPREAD_STD", "CL", "0.4675")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.5")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(270.0 / 24))),
-        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "CL", "292")),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(379.7 / 60 / 24))),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "CL", "5000")),
     },
     {
@@ -365,88 +355,19 @@ def _direction_text(pair: dict, z: float) -> str:
     return f"🟢 LONG {pair['symbol_a']} / SHORT {pair['symbol_b']}"
 
 
-def _near_spread_level(spread: float, level: float, pair: dict, pct: float) -> bool:
-    if level is None:
-        return False
-    level = float(level)
-    if pair.get("spread_type") == "logratio":
-        return abs(spread - level) <= math.log(1.0 + pct)
-    return abs(spread - level) / max(abs(level), 1e-9) <= pct
-
-
-def classify_range_zone(pair: dict, result: dict):
-    """MID: |z| >= mid_z. FULL: |z| >= full_z VÀ spread cách mốc full/min/max ~3%."""
-    mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
-    full_z = float(pair.get("full_z", 2.0))
-    pct = float(pair.get("full_near_pct", 0.03))
-    az = abs(result["z"])
-    sp = result["spread"]
-    full_hi = pair["mean"] + full_z * pair["std"]
-    full_lo = pair["mean"] - full_z * pair["std"]
-    levels = [full_hi, full_lo]
-    if pair.get("range_min") is not None:
-        levels.append(pair["range_min"])
-    if pair.get("range_max") is not None:
-        levels.append(pair["range_max"])
-    at_full_moc = any(_near_spread_level(sp, lv, pair, pct) for lv in levels)
-    if az >= full_z and at_full_moc:
-        return "FULL"
-    if az >= mid_z:
-        return "MID"
-    return None
-
-
-def build_cl_status_message(pair: dict, result: dict) -> str:
-    """Thông báo CL/BRENT — format MID/FULL lấy từ index.py."""
-    z = result["z"]
-    net = result.get("net_expected")
-    net_txt = f"${net:.2f}" if net is not None else "n/a"
-    exit_spread = (result.get("exit_level") or {}).get("exit_spread", pair["mean"])
-    mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
-    full_z = float(pair.get("full_z", 2.0))
-    sign = 1 if z > 0 else -1
-    mid_lvl = pair["mean"] + mid_z * pair["std"] * sign
-    full_lvl = pair["mean"] + full_z * pair["std"] * sign
-    hold_h = pair["expected_hold_days"] * 24
-    zone = classify_range_zone(pair, result)
-    if zone == "FULL":
-        action = "FULL RANGE — VÀO LỆNH"
-        hold_h = float(pair.get("full_hold_hours", hold_h))
-    elif zone == "MID":
-        action = "MID RANGE — VÀO LỆNH"
-    else:
-        action = "CHƯA NÊN VÀO"
-    return (
-        "--------------------------------\n\n"
-        f"*{pair['label']} — {action}*\n"
-        f"{_direction_text(pair, z)}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n"
-        f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.3f}` | Full `{full_lvl:.3f}`\n\n"
-        f"*Net PnL nếu vào giờ → về mean: `{net_txt}`*\n"
-        f"Đóng khi spread về `{exit_spread:.4f}`\n"
-        f"Hold TB ~{hold_h:.0f}h"
-    )
-
-
 def build_signal_message(pair: dict, result: dict) -> str:
-    if pair.get("id") == "cl":
-        return build_cl_status_message(pair, result)
     return (
         f"*PAIRS SIGNAL — {pair['label']}*\n"
         f"{_direction_text(pair, result['z'])}\n\n"
         f"Spread: `{result['spread']:.4f}`\n"
         f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
         f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `${result.get('net_expected', 0):.2f}`*\n\n"
+        f"*Bú Net PnL: `${result['net_expected']:.2f}`*\n\n"
         f"Gõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh"
     )
 
 
 def build_check_message(pair: dict, result: dict) -> str:
-    if pair.get("id") == "cl":
-        return build_cl_status_message(pair, result)
     net = result.get("net_expected")
     net_txt = f"${net:.2f}" if net is not None else "n/a"
     return (
@@ -463,7 +384,7 @@ def build_check_message(pair: dict, result: dict) -> str:
 HELP_TEXT = (
     "*PAIRS BOT — MULTI-PAIR*\n"
     "Đang theo dõi 3 cặp:\n"
-    "• `cl` — CL/BRENT (WTI vs Brent) — Hyperliquid\n"
+    "• `cl` — CL/BRENTOIL (WTI vs Brent) — Hyperliquid\n"
     "• `xyz100` — XYZ100/SP500\n"
     "• `goldsilver` — GOLD/SILVER\n\n"
     "Gõ /check để xem trạng thái TẤT CẢ cặp ngay lúc này.\n"
