@@ -430,7 +430,7 @@ def build_status_message(pair: dict, result: dict) -> str:
         elif zone == "MID":
             action = "MID RANGE — VÀO LỆNH"
         else:
-            action = f"CHƯA NÊN VÀO — |z| `{abs(z):.2f}` < mid `{mid_z:.1f}`"
+            action = f"CHƯA NÊN VÀO"
         return (
             "--------------------------------\n\n"
             f"*CL/BRENT — {action}*\n"
