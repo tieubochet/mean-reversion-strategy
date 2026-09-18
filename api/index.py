@@ -92,7 +92,7 @@ PAIRS = [
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.3")),
         "mid_z": float(_pair_env("MID_Z", "CL", "1.3")),
         "full_z": float(_pair_env("FULL_Z", "CL", "2.0")),
-        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "CL", "0.02")),
+        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "CL", "0.03")),
         "range_min": float(_pair_env("RANGE_MIN", "CL", "-6.009")),
         "range_max": float(_pair_env("RANGE_MAX", "CL", "-1.897")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
@@ -375,10 +375,10 @@ def _near_spread_level(spread: float, level: float, pair: dict, pct: float) -> b
 
 
 def classify_range_zone(pair: dict, result: dict):
-    """MID: |z| >= mid_z. FULL: |z| >= full_z VÀ spread cách mốc full/min/max ~2%."""
+    """MID: |z| >= mid_z. FULL: |z| >= full_z VÀ spread cách mốc full/min/max ~3%."""
     mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
     full_z = float(pair.get("full_z", 2.0))
-    pct = float(pair.get("full_near_pct", 0.02))
+    pct = float(pair.get("full_near_pct", 0.03))
     az = abs(result["z"])
     sp = result["spread"]
     full_hi = pair["mean"] + full_z * pair["std"]
