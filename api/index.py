@@ -26,6 +26,11 @@ CẶP ĐANG THEO DÕI:
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
                     nguồn: Hyperliquid HIP-3 (xyz)
 
+Net PnL (tạm thời, 2026-09-20):
+    Net = lợi nhuận kỳ vọng hồi mean − phí trade (2.2 bps × 4 fill).
+    KHÔNG gọi API funding, KHÔNG trừ chi phí funding.
+    Cặp diff (CL) vẫn phụ thuộc mức giá dầu vì số thùng = capital / avg_price.
+
 QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites" trỏ
 "/api" và "/api/webhook" về "/api/index", nếu không sẽ bị 404 ở tầng Vercel.
 
@@ -55,9 +60,8 @@ app = Flask(__name__)
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 INTERVAL = "15m"
-HIP3_DEX = "xyz"
 
-# Variational Omni — public read-only API (không có nến lịch sử, không cần auth)
+# Variational Omni — public read-only API (giữ sẵn nếu bật lại cặp xau)
 VAR_STATS_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/stats"
 _VAR_LISTINGS_CACHE = {"ts": 0.0, "listings": None}
 _VAR_CACHE_TTL_S = 8.0
@@ -158,25 +162,6 @@ def fetch_latest_close(coin: str) -> float:
     return float(candles[-1]["c"])
 
 
-def fetch_funding_rates(symbol_a: str, symbol_b: str) -> dict:
-    payload = {"type": "metaAndAssetCtxs", "dex": HIP3_DEX}
-    resp = requests.post(HL_INFO_URL, json=payload, timeout=8)
-    resp.raise_for_status()
-    meta, asset_ctxs = resp.json()
-
-    universe = meta["universe"]
-    rates = {}
-    for i, asset in enumerate(universe):
-        name = asset["name"]
-        if name in (symbol_a, symbol_b):
-            rates[name] = float(asset_ctxs[i]["funding"])
-
-    missing = {symbol_a, symbol_b} - rates.keys()
-    if missing:
-        raise RuntimeError(f"Missing funding rate for: {missing}")
-    return rates
-
-
 # =============================================================================
 # VARIATIONAL (giữ sẵn nếu bật lại cặp xau)
 # =============================================================================
@@ -196,11 +181,6 @@ def fetch_variational_listings() -> list:
     return listings
 
 
-def _variational_hourly_decimal(listing: dict) -> float:
-    raw = float(listing.get("funding_rate") or 0.0)
-    return raw / 8760.0
-
-
 def fetch_variational_pair(symbol_a: str, symbol_b: str) -> dict:
     listings = fetch_variational_listings()
     by_ticker = {str(x.get("ticker")): x for x in listings}
@@ -211,10 +191,6 @@ def fetch_variational_pair(symbol_a: str, symbol_b: str) -> dict:
     return {
         "price_a": float(la["mark_price"]),
         "price_b": float(lb["mark_price"]),
-        "funding_rates": {
-            symbol_a: _variational_hourly_decimal(la),
-            symbol_b: _variational_hourly_decimal(lb),
-        },
     }
 
 
@@ -224,31 +200,25 @@ def compute_spread(price_a: float, price_b: float, spread_type: str) -> float:
     return price_a - price_b
 
 
-def compute_zscore(pair: dict, with_funding: bool) -> dict:
+def compute_zscore(pair: dict) -> dict:
     symbol_a, symbol_b = pair["symbol_a"], pair["symbol_b"]
     venue = pair.get("venue", "hyperliquid")
 
     if venue == "variational":
         var = fetch_variational_pair(symbol_a, symbol_b)
         price_a, price_b = var["price_a"], var["price_b"]
-        funding_rates = var["funding_rates"] if with_funding else None
     else:
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        with ThreadPoolExecutor(max_workers=2) as ex:
             fut_a = ex.submit(fetch_latest_close, symbol_a)
             fut_b = ex.submit(fetch_latest_close, symbol_b)
-            fut_funding = (
-                ex.submit(fetch_funding_rates, symbol_a, symbol_b) if with_funding else None
-            )
             price_a = fut_a.result()
             price_b = fut_b.result()
-            funding_rates = fut_funding.result() if fut_funding else None
 
     spread = compute_spread(price_a, price_b, pair["spread_type"])
     std = pair["std"]
     z = (spread - pair["mean"]) / std if std > 0 else 0.0
     return {
         "spread": spread, "z": z, "price_A": price_a, "price_B": price_b,
-        "funding_rates": funding_rates,
     }
 
 
@@ -272,69 +242,31 @@ def estimate_expected_pnl(pair: dict, stats: dict) -> float:
     return deviation * units_per_leg
 
 
-def estimate_funding_cost(pair: dict, stats: dict, funding_rates: dict) -> dict:
-    symbol_a, symbol_b = pair["symbol_a"], pair["symbol_b"]
-    daily_rate_a = funding_rates[symbol_a] * 24
-    daily_rate_b = funding_rates[symbol_b] * 24
-    capital = pair["capital_per_leg"]
-
-    if stats["z"] > 0:
-        cost_a = -capital * daily_rate_a
-        cost_b = capital * daily_rate_b
-    else:
-        cost_a = capital * daily_rate_a
-        cost_b = -capital * daily_rate_b
-
-    daily_funding_cost = cost_a + cost_b
-    total_funding_cost = daily_funding_cost * pair["expected_hold_days"]
-
-    return {
-        "daily_rate_a": daily_rate_a, "daily_rate_b": daily_rate_b,
-        "daily_funding_cost": daily_funding_cost, "total_funding_cost": total_funding_cost,
-    }
-
-
-def evaluate_signal(pair: dict, force_funding_check: bool = False) -> dict:
-    stats = compute_zscore(pair, with_funding=force_funding_check)
+def evaluate_signal(pair: dict) -> dict:
+    stats = compute_zscore(pair)
     z = stats["z"]
+    expected_pnl = estimate_expected_pnl(pair, stats)
+    fee = fee_per_round(pair)
+    net_expected = expected_pnl - fee
+    exit_level = suggest_exit_level(pair, z)
 
     result = {
         "pair_id": pair["id"], "pair_label": pair["label"],
         "z": z, "spread": stats["spread"],
         "price_A": stats["price_A"], "price_B": stats["price_B"],
-        "should_enter": False, "reason": "z-score dưới ngưỡng",
-    }
-
-    if abs(z) < pair["threshold"] and not force_funding_check:
-        return result
-
-    if stats["funding_rates"] is not None:
-        funding_rates = stats["funding_rates"]
-    elif pair.get("venue") == "variational":
-        funding_rates = fetch_variational_pair(pair["symbol_a"], pair["symbol_b"])["funding_rates"]
-    else:
-        funding_rates = fetch_funding_rates(pair["symbol_a"], pair["symbol_b"])
-    funding = estimate_funding_cost(pair, stats, funding_rates)
-    expected_pnl = estimate_expected_pnl(pair, stats)
-    fee = fee_per_round(pair)
-    net_expected = expected_pnl - fee - funding["total_funding_cost"]
-    exit_level = suggest_exit_level(pair, z)
-
-    result.update({
-        "funding": funding,
         "expected_pnl": expected_pnl,
         "fee_per_round": fee,
         "net_expected": net_expected,
         "exit_level": exit_level,
-    })
+        "should_enter": False,
+        "reason": "z-score dưới ngưỡng",
+    }
 
     if abs(z) >= pair["threshold"] and net_expected > 0:
         result["should_enter"] = True
         result["reason"] = "Đủ điều kiện vào lệnh (net kỳ vọng > 0)"
     elif abs(z) >= pair["threshold"]:
-        result["reason"] = "Z-score đủ ngưỡng nhưng net kỳ vọng <= 0 (phí+funding ăn hết lợi nhuận)"
-    else:
-        result["reason"] = "z-score dưới ngưỡng (đã tính funding tham khảo)"
+        result["reason"] = "Z-score đủ ngưỡng nhưng net kỳ vọng <= 0 (phí trade ăn hết lợi nhuận)"
 
     return result
 
@@ -490,7 +422,7 @@ PAIRS_TEXT = (
     "Lưu ý: Net PnL dao động từ *20 đến 200*, chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n\n\n"
     "*Giải thích*:\n"
     "2k/leg: 2k long và 2k short\n"
-    "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg\n\n\n"
+    "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg (chưa trừ funding)\n\n\n"
     "*LUÔN KỶ LUẬT KHI VÀO LỆNH*"
 )
 
@@ -504,8 +436,6 @@ def result_to_json(result: dict) -> dict:
     if "net_expected" in result:
         response["expected_pnl"] = round(result["expected_pnl"], 2)
         response["fee_per_round"] = round(result["fee_per_round"], 2)
-        response["daily_funding_cost"] = round(result["funding"]["daily_funding_cost"], 2)
-        response["total_funding_cost"] = round(result["funding"]["total_funding_cost"], 2)
         response["net_expected"] = round(result["net_expected"], 2)
         response["suggested_exit_z"] = round(result["exit_level"]["exit_z"], 4)
         response["suggested_exit_spread"] = round(result["exit_level"]["exit_spread"], 4)
@@ -541,7 +471,7 @@ def scan_bot():
     sections = []
     for pair in PAIRS:
         try:
-            result = evaluate_signal(pair, force_funding_check=True)
+            result = evaluate_signal(pair)
             results[pair["id"]] = result_to_json(result)
             sections.append(build_check_message(pair, result))
         except Exception as e:
@@ -592,7 +522,7 @@ def telegram_webhook():
         elif command == "/check":
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
-                result = evaluate_signal(pair, force_funding_check=True)
+                result = evaluate_signal(pair)
                 msg = f"*[CHECK] {pair['label']}*\n\n" + build_check_message(pair, result)
                 send_telegram_message(msg, chat_id=chat_id)
             elif arg:
@@ -604,7 +534,7 @@ def telegram_webhook():
             else:
                 sections = []
                 for pair in PAIRS:
-                    result = evaluate_signal(pair, force_funding_check=True)
+                    result = evaluate_signal(pair)
                     sections.append(build_check_message(pair, result))
                 msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
                 send_telegram_message(msg, chat_id=chat_id)
