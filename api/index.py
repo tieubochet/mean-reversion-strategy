@@ -17,19 +17,16 @@ thật /api hay /api/webhook nhờ vercel.json rewrites).
 
 CẶP ĐANG THEO DÕI:
     1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B ($/bbl)
-                    nguồn: Hyperliquid HIP-3 (xyz)
-                    params + thông báo MID/FULL lấy từ index.py
                     mean=-4.1789 std=0.8487 mid_z=1.3 full_z=2.0
                     range [-6.009, -1.897] | hold 270h / full 292h
     2. xyz100     — xyz:XYZ100 vs xyz:SP500       — spread = ln(price_A / price_B)
-                    nguồn: Hyperliquid HIP-3 (xyz)
+                    mean=1.352480 std=0.019752 mid_z=1.5 full_z=2.1
+                    range [1.3093, 1.4034] | hold 566.5h / full 549h
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
-                    nguồn: Hyperliquid HIP-3 (xyz)
+                    mean=4.220096 std=0.024484 mid_z=1.4 full_z=2.5
+                    range [4.1438, 4.2829] | hold 227h / full 282.5h
 
-Net PnL (tạm thời, 2026-09-20):
-    Net = lợi nhuận kỳ vọng hồi mean − phí trade (2.2 bps × 4 fill).
-    KHÔNG gọi API funding, KHÔNG trừ chi phí funding.
-    Cặp diff (CL) vẫn phụ thuộc mức giá dầu vì số thùng = capital / avg_price.
+Không tính funding. Net PnL = expected PnL về mean − phí round-trip.
 
 QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites" trỏ
 "/api" và "/api/webhook" về "/api/index", nếu không sẽ bị 404 ở tầng Vercel.
@@ -37,11 +34,11 @@ QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER), tất cả có default hợp lý:
+    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER):
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
-           EXIT_Z_THRESHOLD_<X>, EXPECTED_HOLD_DAYS_<X>, CAPITAL_PER_LEG_<X>
-    Riêng CL (từ index.py): MID_Z_CL, FULL_Z_CL, FULL_NEAR_PCT_CL,
-           RANGE_MIN_CL, RANGE_MAX_CL, FULL_HOLD_HOURS_CL
+           MID_Z_<X>, FULL_Z_<X>, FULL_NEAR_PCT_<X>,
+           RANGE_MIN_<X>, RANGE_MAX_<X>, EXIT_Z_THRESHOLD_<X>,
+           EXPECTED_HOLD_DAYS_<X>, FULL_HOLD_HOURS_<X>, CAPITAL_PER_LEG_<X>
 =============================================================================
 """
 
@@ -111,11 +108,17 @@ PAIRS = [
         "symbol_a": "xyz:XYZ100",
         "symbol_b": "xyz:SP500",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.3805")),
-        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.0118")),
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "2.25")),
+        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.352480")),
+        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.019752")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "1.5")),
+        "mid_z": float(_pair_env("MID_Z", "XYZ100", "1.5")),
+        "full_z": float(_pair_env("FULL_Z", "XYZ100", "2.1")),
+        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "XYZ100", "0.03")),
+        "range_min": float(_pair_env("RANGE_MIN", "XYZ100", "1.3093")),
+        "range_max": float(_pair_env("RANGE_MAX", "XYZ100", "1.4034")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XYZ100", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(56 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(566.5 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "XYZ100", "549")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XYZ100", "5000")),
     },
     {
@@ -125,11 +128,17 @@ PAIRS = [
         "symbol_a": "xyz:GOLD",
         "symbol_b": "xyz:SILVER",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.23056")),
-        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.020552")),
-        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "2")),
+        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.220096")),
+        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.024484")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "1.4")),
+        "mid_z": float(_pair_env("MID_Z", "GOLDSILVER", "1.4")),
+        "full_z": float(_pair_env("FULL_Z", "GOLDSILVER", "2.5")),
+        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "GOLDSILVER", "0.03")),
+        "range_min": float(_pair_env("RANGE_MIN", "GOLDSILVER", "4.1438")),
+        "range_max": float(_pair_env("RANGE_MAX", "GOLDSILVER", "4.2829")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(798 / 60 / 24))),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(227.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "GOLDSILVER", "282.5")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
     },
     # xau tạm tắt
@@ -163,7 +172,7 @@ def fetch_latest_close(coin: str) -> float:
 
 
 # =============================================================================
-# VARIATIONAL (giữ sẵn nếu bật lại cặp xau)
+# VARIATIONAL (giữ sẵn nếu bật lại cặp xau) — chỉ lấy giá, không lấy funding
 # =============================================================================
 
 def fetch_variational_listings() -> list:
@@ -266,7 +275,9 @@ def evaluate_signal(pair: dict) -> dict:
         result["should_enter"] = True
         result["reason"] = "Đủ điều kiện vào lệnh (net kỳ vọng > 0)"
     elif abs(z) >= pair["threshold"]:
-        result["reason"] = "Z-score đủ ngưỡng nhưng net kỳ vọng <= 0 (phí trade ăn hết lợi nhuận)"
+        result["reason"] = "Z-score đủ ngưỡng nhưng net kỳ vọng <= 0 (phí ăn hết lợi nhuận)"
+    else:
+        result["reason"] = "z-score dưới ngưỡng"
 
     return result
 
@@ -328,8 +339,7 @@ def classify_range_zone(pair: dict, result: dict):
     return None
 
 
-def build_cl_status_message(pair: dict, result: dict) -> str:
-    """Thông báo CL/BRENT — format MID/FULL lấy từ index.py."""
+def build_status_message(pair: dict, result: dict) -> str:
     z = result["z"]
     net = result.get("net_expected")
     net_txt = f"${net:.2f}" if net is not None else "n/a"
@@ -363,33 +373,11 @@ def build_cl_status_message(pair: dict, result: dict) -> str:
 
 
 def build_signal_message(pair: dict, result: dict) -> str:
-    if pair.get("id") == "cl":
-        return build_cl_status_message(pair, result)
-    return (
-        f"*PAIRS SIGNAL — {pair['label']}*\n"
-        f"{_direction_text(pair, result['z'])}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `${result.get('net_expected', 0):.2f}`*\n\n"
-        f"Gõ /check để biết giá hiện tại và /entry để biết gợi ý vào lệnh"
-    )
+    return build_status_message(pair, result)
 
 
 def build_check_message(pair: dict, result: dict) -> str:
-    if pair.get("id") == "cl":
-        return build_cl_status_message(pair, result)
-    net = result.get("net_expected")
-    net_txt = f"${net:.2f}" if net is not None else "n/a"
-    return (
-        "--------------------------------\n\n"
-        f"*PAIRS SIGNAL — {pair['label']}*\n"
-        f"{_direction_text(pair, result['z'])}\n\n"
-        f"Spread: `{result['spread']:.4f}`\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n\n"
-        f"*Bú Net PnL: `{net_txt}`*"
-    )
+    return build_status_message(pair, result)
 
 
 HELP_TEXT = (
@@ -422,7 +410,7 @@ PAIRS_TEXT = (
     "Lưu ý: Net PnL dao động từ *20 đến 200*, chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n\n\n"
     "*Giải thích*:\n"
     "2k/leg: 2k long và 2k short\n"
-    "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg (chưa trừ funding)\n\n\n"
+    "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg (không gồm funding)\n\n\n"
     "*LUÔN KỶ LUẬT KHI VÀO LỆNH*"
 )
 
@@ -480,7 +468,11 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        send_telegram_message("*[SCAN]*\n\n" + "\n\n".join(sections) + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh")
+        send_telegram_message(
+            "*[SCAN]*\n\n"
+            + "\n\n".join(sections)
+            + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
+        )
 
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors}), status_code
@@ -536,7 +528,11 @@ def telegram_webhook():
                 for pair in PAIRS:
                     result = evaluate_signal(pair)
                     sections.append(build_check_message(pair, result))
-                msg = "*[CHECK] PAIRS STATUS*\n\n" + "\n\n".join(sections) + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
+                msg = (
+                    "*[CHECK] PAIRS STATUS*\n\n"
+                    + "\n\n".join(sections)
+                    + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
+                )
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
