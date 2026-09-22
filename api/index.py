@@ -13,7 +13,7 @@ thật /api hay /api/webhook nhờ vercel.json rewrites).
                                /check            -> trạng thái TẤT CẢ cặp
                                /check <pair_id>  -> trạng thái 1 cặp cụ thể
                                /entry            -> gợi ý vào lệnh
-                               (pair_id: "cl" / "xyz100" / "goldsilver")
+                               (pair_id: "cl" / "xyz100" / "goldsilver" / "eurgbp")
 
 CẶP ĐANG THEO DÕI:
     1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B ($/bbl)
@@ -25,6 +25,9 @@ CẶP ĐANG THEO DÕI:
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
                     mean=4.220096 std=0.024484 mid_z=1.4 full_z=2.5
                     range [4.1438, 4.2829] | hold 227h / full 282.5h
+    4. eurgbp     — xyz:EUR vs xyz:GBP            — spread = ln(price_A / price_B)
+                    mean=-0.154973 std=0.003601 mid_z=1.75 full_z=2.5
+                    range [-0.1663, -0.1414] | hold 145h / full 221h
 
 Không tính funding. Net PnL = expected PnL về mean − phí round-trip.
 
@@ -34,7 +37,7 @@ QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER):
+    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER, _EURGBP):
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
            MID_Z_<X>, FULL_Z_<X>, FULL_NEAR_PCT_<X>,
            RANGE_MIN_<X>, RANGE_MAX_<X>, EXIT_Z_THRESHOLD_<X>,
@@ -140,6 +143,26 @@ PAIRS = [
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(227.0 / 24))),
         "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "GOLDSILVER", "282.5")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "GOLDSILVER", "5000")),
+    },
+    {
+        "id": "eurgbp",
+        "label": "EUR/GBP",
+        "venue": "hyperliquid",
+        "symbol_a": "xyz:EUR",
+        "symbol_b": "xyz:GBP",
+        "spread_type": "logratio",
+        "mean": float(_pair_env("SPREAD_MEAN", "EURGBP", "-0.154973")),
+        "std": float(_pair_env("SPREAD_STD", "EURGBP", "0.003601")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "EURGBP", "1.75")),
+        "mid_z": float(_pair_env("MID_Z", "EURGBP", "1.75")),
+        "full_z": float(_pair_env("FULL_Z", "EURGBP", "2.5")),
+        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "EURGBP", "0.03")),
+        "range_min": float(_pair_env("RANGE_MIN", "EURGBP", "-0.1663")),
+        "range_max": float(_pair_env("RANGE_MAX", "EURGBP", "-0.1414")),
+        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "EURGBP", "0.0")),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "EURGBP", str(145.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "EURGBP", "221")),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "EURGBP", "5000")),
     },
     # xau tạm tắt
 ]
@@ -302,6 +325,10 @@ def send_telegram_message(text: str, chat_id: str = None):
         print(f"[ERROR] Gửi Telegram thất bại: {e}")
 
 
+def _fmt_px(price: float) -> str:
+    return f"{price:.4f}" if abs(price) < 20 else f"{price:.2f}"
+
+
 def _direction_text(pair: dict, z: float) -> str:
     if z > 0:
         return f"🔴 SHORT {pair['symbol_a']} / LONG {pair['symbol_b']}"
@@ -363,8 +390,8 @@ def build_status_message(pair: dict, result: dict) -> str:
         f"*{pair['label']} — {action}*\n"
         f"{_direction_text(pair, z)}\n\n"
         f"Spread: `{result['spread']:.4f}`\n"
-        f"Giá {pair['symbol_a']}: `${result['price_A']:.2f}` | "
-        f"Giá {pair['symbol_b']}: `${result['price_B']:.2f}`\n"
+        f"Giá {pair['symbol_a']}: `${_fmt_px(result['price_A'])}` | "
+        f"Giá {pair['symbol_b']}: `${_fmt_px(result['price_B'])}`\n"
         f"Mean `{pair['mean']:.4f}` | Mid `{mid_lvl:.3f}` | Full `{full_lvl:.3f}`\n\n"
         f"*Net PnL nếu vào giờ → về mean: `{net_txt}`*\n"
         f"Đóng khi spread về `{exit_spread:.4f}`\n"
@@ -382,12 +409,13 @@ def build_check_message(pair: dict, result: dict) -> str:
 
 HELP_TEXT = (
     "*PAIRS BOT — MULTI-PAIR*\n"
-    "Đang theo dõi 3 cặp:\n"
+    "Đang theo dõi 4 cặp:\n"
     "• `cl` — CL/BRENT (WTI vs Brent) — Hyperliquid\n"
     "• `xyz100` — XYZ100/SP500\n"
-    "• `goldsilver` — GOLD/SILVER\n\n"
+    "• `goldsilver` — GOLD/SILVER\n"
+    "• `eurgbp` — EUR/GBP (`xyz:EUR` vs `xyz:GBP`)\n\n"
     "Gõ /check để xem trạng thái TẤT CẢ cặp ngay lúc này.\n"
-    "Gõ /check cl, /check xyz100 hoặc /check goldsilver để xem riêng 1 cặp.\n"
+    "Gõ /check cl, /check xyz100, /check goldsilver hoặc /check eurgbp để xem riêng 1 cặp.\n"
     "Gõ /entry để xem gợi ý vào lệnh.\n"
     "Cron gửi trạng thái tất cả cặp mỗi lần quét, không cần đủ ngưỡng."
 )
@@ -407,7 +435,13 @@ PAIRS_TEXT = (
     "🟢 LONG GOLD / SHORT SILVER khi Net PnL >= 150 \n"
     "🔴 SHORT GOLD / LONG SILVER khi Net PnL <= 50 \n\n"
     "Chia vốn thành 4-5 phần, cứ 35 - 45 giá dca 2k/leg\n"
-    "Lưu ý: Net PnL dao động từ *20 đến 200*, chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n\n\n"
+    "Lưu ý: Net PnL dao động từ *20 đến 200*, chỉ vào lệnh khi Net PnL <= 50 hoặc >= 150.\n"
+    "--------------------------------\n"
+    "🟢 LONG EUR / SHORT GBP khi Net PnL >= 35 \n"
+    "🔴 SHORT EUR / LONG GBP khi Net PnL >= 35 \n\n"
+    "Chia vốn thành 4-5 phần, cứ ~20-30 pip chéo dca 2k/leg\n"
+    "Lưu ý: Net PnL dao động từ *15 đến 65* (spread rất chặt). Chỉ vào khi Net >= 35 "
+    "(~z 2.0). GBP HIP-3 thanh khoản mỏng hơn EUR — canh slippage.\n\n\n"
     "*Giải thích*:\n"
     "2k/leg: 2k long và 2k short\n"
     "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg (không gồm funding)\n\n\n"
