@@ -65,6 +65,9 @@ INTERVAL = "15m"
 VAR_STATS_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/stats"
 _VAR_LISTINGS_CACHE = {"ts": 0.0, "listings": None}
 _VAR_CACHE_TTL_S = 8.0
+_HL_MIDS_CACHE = {"ts": 0.0, "mids": None}
+_HL_MIDS_TTL_S = 8.0
+CANDLE_LOOKBACK_MS = 24 * 60 * 60 * 1000  # GBP HIP-3 thường lệch nến > 45 phút
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -178,20 +181,55 @@ def fee_per_round(pair: dict) -> float:
 # HYPERLIQUID DATA FETCHING
 # =============================================================================
 
+def fetch_xyz_mids() -> dict:
+    """Mark price mọi coin dex xyz — GBP thanh khoản thấp vẫn có mid khi không có nến."""
+    now = time.time()
+    cached = _HL_MIDS_CACHE["mids"]
+    if cached is not None and (now - _HL_MIDS_CACHE["ts"]) < _HL_MIDS_TTL_S:
+        return cached
+    resp = requests.post(HL_INFO_URL, json={"type": "allMids", "dex": "xyz"}, timeout=8)
+    resp.raise_for_status()
+    mids = resp.json() or {}
+    if not isinstance(mids, dict) or not mids:
+        raise RuntimeError("Hyperliquid allMids dex=xyz empty")
+    _HL_MIDS_CACHE["ts"] = now
+    _HL_MIDS_CACHE["mids"] = mids
+    return mids
+
+
+def fetch_mid_price(coin: str) -> float:
+    mids = fetch_xyz_mids()
+    raw = mids.get(coin)
+    if raw is None:
+        raise RuntimeError(f"allMids missing {coin}")
+    px = float(raw)
+    if px <= 0:
+        raise RuntimeError(f"allMids invalid price for {coin}: {raw}")
+    return px
+
+
 def fetch_latest_close(coin: str) -> float:
+    """Close nến 15m mới nhất trong 24h; nếu không có nến (sách mỏng) → mid."""
     now_ms = int(time.time() * 1000)
-    lookback_ms = 15 * 60 * 1000 * 3
     payload = {
         "type": "candleSnapshot",
-        "req": {"coin": coin, "interval": INTERVAL,
-                 "startTime": now_ms - lookback_ms, "endTime": now_ms},
+        "req": {
+            "coin": coin,
+            "interval": INTERVAL,
+            "startTime": now_ms - CANDLE_LOOKBACK_MS,
+            "endTime": now_ms,
+        },
     }
-    resp = requests.post(HL_INFO_URL, json=payload, timeout=8)
-    resp.raise_for_status()
-    candles = resp.json()
-    if not candles:
-        raise RuntimeError(f"No candle data returned for {coin}")
-    return float(candles[-1]["c"])
+    try:
+        resp = requests.post(HL_INFO_URL, json=payload, timeout=8)
+        resp.raise_for_status()
+        candles = resp.json()
+        if candles:
+            return float(candles[-1]["c"])
+        print(f"[WARN] no {INTERVAL} candles in 24h for {coin}, fallback allMids")
+    except Exception as e:
+        print(f"[WARN] candleSnapshot {coin} failed ({e}), fallback allMids")
+    return fetch_mid_price(coin)
 
 
 # =============================================================================
