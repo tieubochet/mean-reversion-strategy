@@ -552,7 +552,8 @@ def scan_bot():
         send_telegram_message(
             "*[SCAN]*\n\n"
             + "\n\n".join(sections)
-            + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
+            + "\n\n\nGõ /check để xem giá hiện tại"
+            + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
         )
 
     status_code = 200 if not errors or results else 500
@@ -612,7 +613,8 @@ def telegram_webhook():
                 msg = (
                     "*[CHECK] PAIRS STATUS*\n\n"
                     + "\n\n".join(sections)
-                    + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
+                    + "\n\n\nGõ /check để xem giá hiện tại"
+                    + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
                 )
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
