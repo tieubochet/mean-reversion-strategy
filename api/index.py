@@ -20,8 +20,8 @@ CẶP ĐANG THEO DÕI:
                     mean=-4.1789 std=0.8487 mid_z=1.3 full_z=2.0
                     range [-6.009, -1.897] | hold 270h / full 292h
     2. xyz100     — xyz:XYZ100 vs xyz:SP500       — spread = ln(price_A / price_B)
-                    mean=1.352480 std=0.019752 mid_z=1.5 full_z=2.1
-                    range [1.3093, 1.4034] | hold 566.5h / full 549h
+                    mean=1.358734 std=0.021403 mid_z=1.5 full_z=2.1
+                    range [1.3093, 1.4034] | hold 1113h / full 1301h (1H 120d)
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
                     mean=4.220096 std=0.024484 mid_z=1.4 full_z=2.5
                     range [4.1438, 4.2829] | hold 227h / full 282.5h
@@ -114,8 +114,8 @@ PAIRS = [
         "symbol_a": "xyz:XYZ100",
         "symbol_b": "xyz:SP500",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.352480")),
-        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.019752")),
+        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.358734")),
+        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.021403")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "1.5")),
         "mid_z": float(_pair_env("MID_Z", "XYZ100", "1.5")),
         "full_z": float(_pair_env("FULL_Z", "XYZ100", "2.1")),
@@ -123,8 +123,8 @@ PAIRS = [
         "range_min": float(_pair_env("RANGE_MIN", "XYZ100", "1.3093")),
         "range_max": float(_pair_env("RANGE_MAX", "XYZ100", "1.4034")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "XYZ100", "0.0")),
-        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(566.5 / 24))),
-        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "XYZ100", "549")),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "XYZ100", str(1113.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "XYZ100", "1301")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "XYZ100", "5000")),
     },
     {
@@ -383,7 +383,11 @@ def _near_spread_level(spread: float, level: float, pair: dict, pct: float) -> b
 
 
 def classify_range_zone(pair: dict, result: dict):
-    """MID: |z| >= mid_z. FULL: |z| >= full_z VÀ spread cách mốc full/min/max ~3%."""
+    """MID: |z| >= mid_z.
+
+    FULL: |z| >= full_z và (gần mốc full/min/max ~3% HOẶC đã vượt mốc cùng phía).
+    Vượt mốc: spread <= min(full_lo, range_min) hoặc spread >= max(full_hi, range_max).
+    """
     mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
     full_z = float(pair.get("full_z", 2.0))
     pct = float(pair.get("full_near_pct", 0.03))
@@ -391,13 +395,18 @@ def classify_range_zone(pair: dict, result: dict):
     sp = result["spread"]
     full_hi = pair["mean"] + full_z * pair["std"]
     full_lo = pair["mean"] - full_z * pair["std"]
+    rmin = pair.get("range_min")
+    rmax = pair.get("range_max")
     levels = [full_hi, full_lo]
-    if pair.get("range_min") is not None:
-        levels.append(pair["range_min"])
-    if pair.get("range_max") is not None:
-        levels.append(pair["range_max"])
+    if rmin is not None:
+        levels.append(rmin)
+    if rmax is not None:
+        levels.append(rmax)
     at_full_moc = any(_near_spread_level(sp, lv, pair, pct) for lv in levels)
-    if az >= full_z and at_full_moc:
+    extreme_lo = min([lv for lv in (full_lo, rmin) if lv is not None], default=full_lo)
+    extreme_hi = max([lv for lv in (full_hi, rmax) if lv is not None], default=full_hi)
+    beyond_extreme = sp <= extreme_lo or sp >= extreme_hi
+    if az >= full_z and (at_full_moc or beyond_extreme):
         return "FULL"
     if az >= mid_z:
         return "MID"
@@ -543,8 +552,7 @@ def scan_bot():
         send_telegram_message(
             "*[SCAN]*\n\n"
             + "\n\n".join(sections)
-            + "\n\n\nGõ /check để xem giá hiện tại"
-            + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
+            + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
         )
 
     status_code = 200 if not errors or results else 500
@@ -604,8 +612,7 @@ def telegram_webhook():
                 msg = (
                     "*[CHECK] PAIRS STATUS*\n\n"
                     + "\n\n".join(sections)
-                    + "\n\n\nGõ /check để xem giá hiện tại"
-                    + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
+                    + "\n\n\nGõ /check để xem giá hiện tại và /entry để biết gợi ý vào lệnh"
                 )
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
