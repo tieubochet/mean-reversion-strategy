@@ -54,7 +54,9 @@ import json
 import math
 import time
 import requests
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -78,6 +80,9 @@ FEE_BPS_PER_FILL = float(os.environ.get("FEE_BPS_PER_FILL", "2.2"))
 FILLS_PER_ROUND = int(os.environ.get("FILLS_PER_ROUND", "4"))
 NOTIFY_STATE_PATH = os.environ.get("NOTIFY_STATE_PATH", "/tmp/pairs_notify.json")
 _NOTIFY_CACHE = {"ids": None}
+_STATS_CACHE = {"day": None, "stats": None}
+ICT = ZoneInfo("Asia/Ho_Chi_Minh")
+WINDOW_DAYS = {"xyz100": 120}
 
 
 def _pair_env(key: str, suffix: str, default: str) -> str:
@@ -225,16 +230,22 @@ def _read_notify_file():
             data = json.load(f)
         ids = data.get("ids")
         if ids == "*":
-            return [p["id"] for p in PAIRS]
-        if isinstance(ids, list):
-            return [p["id"] for p in PAIRS if p["id"] in ids]
+            parsed_ids = [p["id"] for p in PAIRS]
+        elif isinstance(ids, list):
+            parsed_ids = [p["id"] for p in PAIRS if p["id"] in ids]
+        else:
+            parsed_ids = None
+        return parsed_ids, data.get("stats_day"), data.get("stats")
     except Exception:
-        return None
-    return None
+        return None, None, None
 
 
-def _write_notify_file(ids):
-    payload = {"ids": "*" if ids is None or set(ids) == {p["id"] for p in PAIRS} else list(ids)}
+def _write_state(ids, stats_day=None, stats=None):
+    payload = {
+        "ids": "*" if ids is None or set(ids) == {p["id"] for p in PAIRS} else list(ids),
+        "stats_day": stats_day,
+        "stats": stats,
+    }
     try:
         with open(NOTIFY_STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f)
@@ -242,9 +253,14 @@ def _write_notify_file(ids):
         print(f"[WARN] notify state file: {e}")
 
 
-def _read_notify_pin():
+def _write_notify_file(ids):
+    _, day, stats = _read_notify_file()
+    _write_state(ids, day, stats)
+
+
+def _read_pin_text():
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return None
+        return ""
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChat",
@@ -252,27 +268,69 @@ def _read_notify_pin():
             timeout=8,
         )
         pin = ((resp.json() or {}).get("result") or {}).get("pinned_message") or {}
-        text = pin.get("text") or ""
-        if not text.startswith("NOTIFY_ON:"):
-            return None
-        body = text.split(":", 1)[1].strip()
-        if body in ("*", "all"):
-            return [p["id"] for p in PAIRS]
-        return [p["id"] for p in PAIRS if p["id"] in {t.strip() for t in body.split(",")}]
+        return pin.get("text") or ""
     except Exception as e:
         print(f"[WARN] notify pin: {e}")
-        return None
+        return ""
 
 
-def _pin_notify_state(ids):
+def _parse_pin(text: str):
+    ids = None
+    day = None
+    stats = None
+    for line in (text or "").splitlines():
+        if line.startswith("NOTIFY_ON:"):
+            body = line.split(":", 1)[1].strip()
+            if body in ("*", "all"):
+                ids = [p["id"] for p in PAIRS]
+            else:
+                ids = [p["id"] for p in PAIRS if p["id"] in {t.strip() for t in body.split(",")}]
+        elif line.startswith("STATS:"):
+            parts = line.split(":", 1)[1].split()
+            if not parts:
+                continue
+            day = parts[0]
+            stats = {}
+            for part in parts[1:]:
+                if "=" not in part:
+                    continue
+                pid, vals = part.split("=", 1)
+                bits = vals.split(",")
+                if len(bits) != 4 or pid not in PAIRS_BY_ID:
+                    continue
+                stats[pid] = {
+                    "mean": float(bits[0]),
+                    "std": float(bits[1]),
+                    "min": float(bits[2]),
+                    "max": float(bits[3]),
+                }
+    return ids, day, stats
+
+
+def _read_notify_pin():
+    ids, _, _ = _parse_pin(_read_pin_text())
+    return ids
+
+
+def _pin_state(ids, stats_day=None, stats=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     body = "*" if set(ids) == {p["id"] for p in PAIRS} else ",".join(ids)
-    text = f"NOTIFY_ON:{body}"
+    lines = [f"NOTIFY_ON:{body}"]
+    if stats_day and stats:
+        bits = []
+        for pair in PAIRS:
+            st = stats.get(pair["id"])
+            if not st:
+                continue
+            bits.append(
+                f"{pair['id']}={st['mean']:.6f},{st['std']:.6f},{st['min']:.4f},{st['max']:.4f}"
+            )
+        lines.append(f"STATS:{stats_day} " + " ".join(bits))
     try:
         sent = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_notification": True},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": "\n".join(lines), "disable_notification": True},
             timeout=8,
         ).json()
         mid = ((sent or {}).get("result") or {}).get("message_id")
@@ -289,12 +347,17 @@ def _pin_notify_state(ids):
         return False
 
 
+def _pin_notify_state(ids):
+    _, day, stats = _parse_pin(_read_pin_text())
+    return _pin_state(ids, day, stats)
+
+
 def enabled_pair_ids(refresh=False):
     if not refresh and _NOTIFY_CACHE["ids"] is not None:
         return _NOTIFY_CACHE["ids"]
     ids = _read_notify_pin()
     if ids is None:
-        ids = _read_notify_file()
+        ids, _, _ = _read_notify_file()
     if ids is None:
         raw = os.environ.get("ENABLED_PAIRS", "").strip()
         ids = _parse_pair_ids(raw)[0] if raw else [p["id"] for p in PAIRS]
@@ -326,6 +389,114 @@ def notify_status_text():
     lines.append("Đặt lại: `/on cl, xyz100, goldsilver, eurgbp`")
     lines.append("Bật hết: `/on all`")
     return "\n".join(lines)
+
+
+def ict_slot(now=None):
+    now = now or datetime.now(ICT)
+    slot = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now < slot:
+        slot -= timedelta(days=1)
+    return slot
+
+
+def apply_stats(stats):
+    if not stats:
+        return
+    for pair in PAIRS:
+        st = stats.get(pair["id"])
+        if not st or st.get("std", 0) <= 0:
+            continue
+        pair["mean"] = float(st["mean"])
+        pair["std"] = float(st["std"])
+        pair["range_min"] = float(st["min"])
+        pair["range_max"] = float(st["max"])
+
+
+def _load_saved_stats():
+    if _STATS_CACHE["stats"]:
+        return _STATS_CACHE["day"], _STATS_CACHE["stats"]
+    _, day, stats = _parse_pin(_read_pin_text())
+    if not stats:
+        _, day, stats = _read_notify_file()
+    if stats:
+        _STATS_CACHE["day"] = day
+        _STATS_CACHE["stats"] = stats
+    return day, stats
+
+
+def _fetch_hour_closes(coin: str, start: int, end: int):
+    resp = requests.post(
+        HL_INFO_URL,
+        json={"type": "candleSnapshot", "req": {"coin": coin, "interval": "1h", "startTime": start, "endTime": end}},
+        timeout=12,
+    )
+    resp.raise_for_status()
+    candles = resp.json()
+    if not isinstance(candles, list) or not candles:
+        raise RuntimeError(f"không có nến 1h {coin}")
+    return candles
+
+
+def _window_stats(pair, closes, end_ms):
+    days = WINDOW_DAYS.get(pair["id"], 90)
+    start = end_ms - days * 24 * 3600 * 1000
+    by_b = {c["t"]: float(c["c"]) for c in closes[pair["symbol_b"]] if c["t"] >= start}
+    spreads = []
+    for ca in closes[pair["symbol_a"]]:
+        if ca["t"] < start or ca["t"] > end_ms:
+            continue
+        pb = by_b.get(ca["t"])
+        pa = float(ca["c"])
+        if pb is None or pa <= 0 or pb <= 0:
+            continue
+        spreads.append(compute_spread(pa, pb, pair["spread_type"]))
+    if len(spreads) < 48:
+        raise RuntimeError(f"quá ít nến {pair['id']}")
+    mean = sum(spreads) / len(spreads)
+    var = sum((x - mean) ** 2 for x in spreads) / len(spreads)
+    return {"mean": mean, "std": math.sqrt(var), "min": min(spreads), "max": max(spreads), "n": len(spreads)}
+
+
+def maybe_refresh_pair_stats():
+    """08:00 ICT: chốt mean/std/range cửa sổ 1H (90d, XYZ100 120d) như desk."""
+    day, stats = _load_saved_stats()
+    apply_stats(stats)
+    slot = ict_slot()
+    slot_key = slot.date().isoformat()
+    if day == slot_key:
+        return slot_key, False
+    if datetime.now(ICT) < slot.replace(hour=8):
+        return day, False
+    end_ms = int(slot.timestamp() * 1000)
+    coins = sorted({p[k] for p in PAIRS for k in ("symbol_a", "symbol_b")})
+    start = end_ms - 120 * 24 * 3600 * 1000
+    closes = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_fetch_hour_closes, coin, start, end_ms): coin for coin in coins}
+        for fut in as_completed(futs):
+            coin = futs[fut]
+            try:
+                closes[coin] = fut.result()
+            except Exception as e:
+                print(f"[WARN] refresh {coin}: {e}")
+    fresh = {}
+    for pair in PAIRS:
+        if pair["symbol_a"] not in closes or pair["symbol_b"] not in closes:
+            continue
+        try:
+            fresh[pair["id"]] = _window_stats(pair, closes, end_ms)
+        except Exception as e:
+            print(f"[WARN] refresh {pair['id']}: {e}")
+    if len(fresh) < len(PAIRS):
+        print(f"[WARN] refresh incomplete {len(fresh)}/{len(PAIRS)}")
+        return day, False
+    apply_stats(fresh)
+    _STATS_CACHE["day"] = slot_key
+    _STATS_CACHE["stats"] = fresh
+    ids = enabled_pair_ids()
+    _write_state(ids, slot_key, fresh)
+    _pin_state(ids, slot_key, fresh)
+    return slot_key, True
 
 
 def fee_per_round(pair: dict) -> float:
@@ -673,6 +844,7 @@ def scan_bot():
     results = {}
     errors = {}
     sections = []
+    slot_key, refreshed = maybe_refresh_pair_stats()
     shown = active_pairs(refresh=True)
     hidden = [p["id"] for p in PAIRS if p["id"] not in {x["id"] for x in shown}]
     for pair in shown:
@@ -687,10 +859,12 @@ def scan_bot():
 
     if sections:
         hide_txt = ("\nẨn: " + ", ".join(f"`{i}`" for i in hidden)) if hidden else ""
+        stamp = f"\nParams chốt 08:00 ICT {slot_key or 'default'}" + (" — vừa tính lại" if refreshed else "")
         send_telegram_message(
             "*[SCAN]*\n\n"
             + "\n\n".join(sections)
             + hide_txt
+            + stamp
             + "\n\n\nGõ /check để xem giá hiện tại"
             + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
         )
@@ -766,12 +940,12 @@ def telegram_webhook():
                 hidden = [p["id"] for p in PAIRS if p["id"] not in {x["id"] for x in active_pairs()}]
                 tail = ""
                 if hidden:
-                    tail = "\nẨn: " + ", ".join(f"`{i}`" for i in hidden) + ". `/on all` để hiện lại."
+                    tail = "\n\n\nĐang ẩn: " + ", ".join(f"`{i}`" for i in hidden) + ". `/on all` để hiện lại."
                 msg = (
                     "*[CHECK] PAIRS STATUS*\n\n"
                     + "\n\n".join(sections)
                     + tail
-                    + "\n\n\nGõ /check để xem giá hiện tại"
+                    + "\nGõ /check để xem giá hiện tại"
                     + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
                 )
                 send_telegram_message(msg, chat_id=chat_id)
