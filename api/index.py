@@ -6,42 +6,38 @@ Pairs Trading Signal Bot — HỖ TRỢ NHIỀU CẶP (multi-pair)
 ổn định (không tự đoán nguồn request từ header, Flask nhận đúng request.path
 thật /api hay /api/webhook nhờ vercel.json rewrites).
 
-    GET/POST /api          -> cron-job.org ping mỗi 5 phút, quét TẤT CẢ các
-                               cặp trong PAIRS, gửi Telegram trạng thái mỗi lần
-                               quét (không cần đủ ngưỡng tín hiệu).
+    GET/POST /api          -> cron-job.org ping mỗi 5 phút, quét các cặp đang
+                               bật, gửi Telegram trạng thái mỗi lần quét.
     POST     /api/webhook  -> Telegram tự gọi mỗi khi có tin nhắn mới.
-                               /check            -> trạng thái TẤT CẢ cặp
+                               /check            -> trạng thái các cặp đang bật
                                /check <pair_id>  -> trạng thái 1 cặp cụ thể
                                /entry            -> gợi ý vào lệnh
                                /on <ids>         -> chỉ cron + /check báo các cặp này
                                (pair_id: "cl" / "xyz100" / "goldsilver" / "eurgbp" / "btceth" / "ethsol")
 
-CẶP ĐANG THEO DÕI:
-    1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B ($/bbl)
-                    mean=-4.1789 std=0.8487 mid_z=1.3 full_z=2.0
-                    range [-6.009, -1.897] | hold 270h / full 292h
+CẶP ĐANG THEO DÕI (mean/std/range = cửa sổ desk 1H, chốt 2026-10-01):
+    1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B
+                    mean=-4.391722 std=0.941472 mid_z=1.3 full_z=2.0
+                    range [-7.772, -1.897] | hold 270h / full 292h (90d)
     2. xyz100     — xyz:XYZ100 vs xyz:SP500       — spread = ln(price_A / price_B)
-                    mean=1.358734 std=0.021403 mid_z=1.5 full_z=2.1
-                    range [1.3093, 1.4034] | hold 1113h / full 1301h (1H 120d)
+                    mean=1.358061 std=0.020658 mid_z=1.5 full_z=2.1
+                    range [1.3093, 1.4034] | hold 1113h / full 1301h (120d)
     3. goldsilver — xyz:GOLD vs xyz:SILVER        — spread = ln(price_A / price_B)
-                    mean=4.220096 std=0.024484 mid_z=1.4 full_z=2.5
-                    range [4.1438, 4.2829] | hold 227h / full 282.5h
+                    mean=4.218911 std=0.022074 mid_z=1.4 full_z=2.5
+                    range [4.1696, 4.2829] | hold 227h / full 282.5h (90d)
     4. eurgbp     — xyz:EUR vs xyz:GBP            — spread = ln(price_A / price_B)
-                    mean=-0.154973 std=0.003601 mid_z=1.75 full_z=2.5
-                    range [-0.1663, -0.1414] | hold 145h / full 221h
+                    mean=-0.155131 std=0.003402 mid_z=1.75 full_z=2.5
+                    range [-0.1663, -0.1414] | hold 145h / full 221h (90d)
     5. btceth     — BTC vs ETH                    — spread = ln(price_A / price_B)
-                    mean=3.500876 std=0.049548 mid_z=1.5 full_z=2.1
-                    range [3.4053, 3.6211] | hold 1077h / full 1200h (1H 90d)
+                    mean=3.496143 std=0.046999 mid_z=1.5 full_z=2.1
+                    range [3.4053, 3.5899] | hold 1077h / full 1200h (90d)
     6. ethsol     — ETH vs SOL                    — spread = ln(price_A / price_B)
-                    mean=3.186650 std=0.054535 mid_z=1.5 full_z=2.5
-                    range [2.9965, 3.2923] | hold 195h / full 317h (1H 90d)
+                    mean=3.188690 std=0.050344 mid_z=1.5 full_z=2.5
+                    range [3.0475, 3.2923] | hold 195h / full 317h (90d)
 
 Không tính funding. Net PnL = expected PnL về mean − phí round-trip.
 
-QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites" trỏ
-"/api" và "/api/webhook" về "/api/index", nếu không sẽ bị 404 ở tầng Vercel.
-
-ENV VARS (Project Settings -> Environment Variables trên Vercel):
+ENV VARS:
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
     Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER, _EURGBP, _BTCETH, _ETHSOL):
@@ -49,6 +45,7 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
            MID_Z_<X>, FULL_Z_<X>, FULL_NEAR_PCT_<X>,
            RANGE_MIN_<X>, RANGE_MAX_<X>, EXIT_Z_THRESHOLD_<X>,
            EXPECTED_HOLD_DAYS_<X>, FULL_HOLD_HOURS_<X>, CAPITAL_PER_LEG_<X>
+    Nếu Vercel còn SPREAD_MEAN_CL=-4.1789 thì default mới không có hiệu lực.
 =============================================================================
 """
 
@@ -62,20 +59,15 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# =============================================================================
-# CONFIG CHUNG
-# =============================================================================
-
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 INTERVAL = "15m"
 
-# Variational Omni — public read-only API (giữ sẵn nếu bật lại cặp xau)
 VAR_STATS_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/stats"
 _VAR_LISTINGS_CACHE = {"ts": 0.0, "listings": None}
 _VAR_CACHE_TTL_S = 8.0
 _HL_MIDS_CACHE = {"ts": 0.0, "mids": None}
 _HL_MIDS_TTL_S = 8.0
-CANDLE_LOOKBACK_MS = 24 * 60 * 60 * 1000  # GBP HIP-3 thường lệch nến > 45 phút
+CANDLE_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -88,10 +80,6 @@ NOTIFY_STATE_PATH = os.environ.get("NOTIFY_STATE_PATH", "/tmp/pairs_notify.json"
 _NOTIFY_CACHE = {"ids": None}
 
 
-# =============================================================================
-# CẤU HÌNH TỪNG CẶP (PAIRS)
-# =============================================================================
-
 def _pair_env(key: str, suffix: str, default: str) -> str:
     return os.environ.get(f"{key}_{suffix}", default)
 
@@ -103,14 +91,14 @@ PAIRS = [
         "venue": "hyperliquid",
         "symbol_a": "xyz:CL",
         "symbol_b": "xyz:BRENTOIL",
-        "spread_type": "diff",              # spread = price_A - price_B
-        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.1789")),
-        "std": float(_pair_env("SPREAD_STD", "CL", "0.8487")),
+        "spread_type": "diff",
+        "mean": float(_pair_env("SPREAD_MEAN", "CL", "-4.391722")),
+        "std": float(_pair_env("SPREAD_STD", "CL", "0.941472")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "CL", "1.3")),
         "mid_z": float(_pair_env("MID_Z", "CL", "1.3")),
         "full_z": float(_pair_env("FULL_Z", "CL", "2.0")),
         "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "CL", "0.03")),
-        "range_min": float(_pair_env("RANGE_MIN", "CL", "-6.009")),
+        "range_min": float(_pair_env("RANGE_MIN", "CL", "-7.772")),
         "range_max": float(_pair_env("RANGE_MAX", "CL", "-1.897")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "CL", "0.0")),
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "CL", str(270.0 / 24))),
@@ -124,8 +112,8 @@ PAIRS = [
         "symbol_a": "xyz:XYZ100",
         "symbol_b": "xyz:SP500",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.358734")),
-        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.021403")),
+        "mean": float(_pair_env("SPREAD_MEAN", "XYZ100", "1.358061")),
+        "std": float(_pair_env("SPREAD_STD", "XYZ100", "0.020658")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "XYZ100", "1.5")),
         "mid_z": float(_pair_env("MID_Z", "XYZ100", "1.5")),
         "full_z": float(_pair_env("FULL_Z", "XYZ100", "2.1")),
@@ -144,13 +132,13 @@ PAIRS = [
         "symbol_a": "xyz:GOLD",
         "symbol_b": "xyz:SILVER",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.220096")),
-        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.024484")),
+        "mean": float(_pair_env("SPREAD_MEAN", "GOLDSILVER", "4.218911")),
+        "std": float(_pair_env("SPREAD_STD", "GOLDSILVER", "0.022074")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "GOLDSILVER", "1.4")),
         "mid_z": float(_pair_env("MID_Z", "GOLDSILVER", "1.4")),
         "full_z": float(_pair_env("FULL_Z", "GOLDSILVER", "2.5")),
         "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "GOLDSILVER", "0.03")),
-        "range_min": float(_pair_env("RANGE_MIN", "GOLDSILVER", "4.1438")),
+        "range_min": float(_pair_env("RANGE_MIN", "GOLDSILVER", "4.1696")),
         "range_max": float(_pair_env("RANGE_MAX", "GOLDSILVER", "4.2829")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "GOLDSILVER", "0.0")),
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "GOLDSILVER", str(227.0 / 24))),
@@ -164,8 +152,8 @@ PAIRS = [
         "symbol_a": "xyz:EUR",
         "symbol_b": "xyz:GBP",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "EURGBP", "-0.154973")),
-        "std": float(_pair_env("SPREAD_STD", "EURGBP", "0.003601")),
+        "mean": float(_pair_env("SPREAD_MEAN", "EURGBP", "-0.155131")),
+        "std": float(_pair_env("SPREAD_STD", "EURGBP", "0.003402")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "EURGBP", "1.75")),
         "mid_z": float(_pair_env("MID_Z", "EURGBP", "1.75")),
         "full_z": float(_pair_env("FULL_Z", "EURGBP", "2.5")),
@@ -184,14 +172,14 @@ PAIRS = [
         "symbol_a": "BTC",
         "symbol_b": "ETH",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "BTCETH", "3.500876")),
-        "std": float(_pair_env("SPREAD_STD", "BTCETH", "0.049548")),
+        "mean": float(_pair_env("SPREAD_MEAN", "BTCETH", "3.496143")),
+        "std": float(_pair_env("SPREAD_STD", "BTCETH", "0.046999")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "BTCETH", "1.5")),
         "mid_z": float(_pair_env("MID_Z", "BTCETH", "1.5")),
         "full_z": float(_pair_env("FULL_Z", "BTCETH", "2.1")),
         "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "BTCETH", "0.03")),
         "range_min": float(_pair_env("RANGE_MIN", "BTCETH", "3.4053")),
-        "range_max": float(_pair_env("RANGE_MAX", "BTCETH", "3.6211")),
+        "range_max": float(_pair_env("RANGE_MAX", "BTCETH", "3.5899")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "BTCETH", "0.0")),
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "BTCETH", str(1077.0 / 24))),
         "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "BTCETH", "1200")),
@@ -204,20 +192,19 @@ PAIRS = [
         "symbol_a": "ETH",
         "symbol_b": "SOL",
         "spread_type": "logratio",
-        "mean": float(_pair_env("SPREAD_MEAN", "ETHSOL", "3.186650")),
-        "std": float(_pair_env("SPREAD_STD", "ETHSOL", "0.054535")),
+        "mean": float(_pair_env("SPREAD_MEAN", "ETHSOL", "3.188690")),
+        "std": float(_pair_env("SPREAD_STD", "ETHSOL", "0.050344")),
         "threshold": float(_pair_env("SIGNAL_THRESHOLD", "ETHSOL", "1.5")),
         "mid_z": float(_pair_env("MID_Z", "ETHSOL", "1.5")),
         "full_z": float(_pair_env("FULL_Z", "ETHSOL", "2.5")),
         "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "ETHSOL", "0.03")),
-        "range_min": float(_pair_env("RANGE_MIN", "ETHSOL", "2.9965")),
+        "range_min": float(_pair_env("RANGE_MIN", "ETHSOL", "3.0475")),
         "range_max": float(_pair_env("RANGE_MAX", "ETHSOL", "3.2923")),
         "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "ETHSOL", "0.0")),
         "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "ETHSOL", str(195.0 / 24))),
         "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "ETHSOL", "317")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "ETHSOL", "5000")),
     },
-    # xau tạm tắt
 ]
 
 PAIRS_BY_ID = {p["id"]: p for p in PAIRS}
@@ -345,12 +332,7 @@ def fee_per_round(pair: dict) -> float:
     return (FEE_BPS_PER_FILL / 10_000) * pair["capital_per_leg"] * FILLS_PER_ROUND
 
 
-# =============================================================================
-# HYPERLIQUID DATA FETCHING
-# =============================================================================
-
 def fetch_xyz_mids() -> dict:
-    """Mark price dex chính (BTC/ETH/SOL) + dex xyz. Cache 8s."""
     now = time.time()
     cached = _HL_MIDS_CACHE["mids"]
     if cached is not None and (now - _HL_MIDS_CACHE["ts"]) < _HL_MIDS_TTL_S:
@@ -384,7 +366,6 @@ def fetch_mid_price(coin: str) -> float:
 
 
 def fetch_latest_close(coin: str) -> float:
-    """Close nến 15m mới nhất trong 24h; nếu không có nến (sách mỏng) → mid."""
     now_ms = int(time.time() * 1000)
     payload = {
         "type": "candleSnapshot",
@@ -406,10 +387,6 @@ def fetch_latest_close(coin: str) -> float:
         print(f"[WARN] candleSnapshot {coin} failed ({e}), fallback allMids")
     return fetch_mid_price(coin)
 
-
-# =============================================================================
-# VARIATIONAL (giữ sẵn nếu bật lại cặp xau) — chỉ lấy giá, không lấy funding
-# =============================================================================
 
 def fetch_variational_listings() -> list:
     now = time.time()
@@ -433,10 +410,7 @@ def fetch_variational_pair(symbol_a: str, symbol_b: str) -> dict:
     if missing:
         raise RuntimeError(f"Variational listings missing ticker(s): {missing}")
     la, lb = by_ticker[symbol_a], by_ticker[symbol_b]
-    return {
-        "price_a": float(la["mark_price"]),
-        "price_b": float(lb["mark_price"]),
-    }
+    return {"price_a": float(la["mark_price"]), "price_b": float(lb["mark_price"])}
 
 
 def compute_spread(price_a: float, price_b: float, spread_type: str) -> float:
@@ -447,9 +421,7 @@ def compute_spread(price_a: float, price_b: float, spread_type: str) -> float:
 
 def compute_zscore(pair: dict) -> dict:
     symbol_a, symbol_b = pair["symbol_a"], pair["symbol_b"]
-    venue = pair.get("venue", "hyperliquid")
-
-    if venue == "variational":
+    if pair.get("venue") == "variational":
         var = fetch_variational_pair(symbol_a, symbol_b)
         price_a, price_b = var["price_a"], var["price_b"]
     else:
@@ -458,18 +430,11 @@ def compute_zscore(pair: dict) -> dict:
             fut_b = ex.submit(fetch_latest_close, symbol_b)
             price_a = fut_a.result()
             price_b = fut_b.result()
-
     spread = compute_spread(price_a, price_b, pair["spread_type"])
     std = pair["std"]
     z = (spread - pair["mean"]) / std if std > 0 else 0.0
-    return {
-        "spread": spread, "z": z, "price_A": price_a, "price_B": price_b,
-    }
+    return {"spread": spread, "z": z, "price_A": price_a, "price_B": price_b}
 
-
-# =============================================================================
-# SIGNAL LOGIC
-# =============================================================================
 
 def suggest_exit_level(pair: dict, z: float) -> dict:
     exit_z = pair["exit_z"] if z > 0 else -pair["exit_z"]
@@ -494,7 +459,6 @@ def evaluate_signal(pair: dict) -> dict:
     fee = fee_per_round(pair)
     net_expected = expected_pnl - fee
     exit_level = suggest_exit_level(pair, z)
-
     result = {
         "pair_id": pair["id"], "pair_label": pair["label"],
         "z": z, "spread": stats["spread"],
@@ -506,21 +470,13 @@ def evaluate_signal(pair: dict) -> dict:
         "should_enter": False,
         "reason": "z-score dưới ngưỡng",
     }
-
     if abs(z) >= pair["threshold"] and net_expected > 0:
         result["should_enter"] = True
         result["reason"] = "Đủ điều kiện vào lệnh (net kỳ vọng > 0)"
     elif abs(z) >= pair["threshold"]:
         result["reason"] = "Z-score đủ ngưỡng nhưng net kỳ vọng <= 0 (phí ăn hết lợi nhuận)"
-    else:
-        result["reason"] = "z-score dưới ngưỡng"
-
     return result
 
-
-# =============================================================================
-# TELEGRAM
-# =============================================================================
 
 def send_telegram_message(text: str, chat_id: str = None):
     target_chat_id = chat_id or TELEGRAM_CHAT_ID
@@ -528,9 +484,8 @@ def send_telegram_message(text: str, chat_id: str = None):
         print(f"[TG] Missing token/chat_id, would have sent: {text}")
         return
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(
-            url,
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": target_chat_id, "text": text, "parse_mode": "Markdown"},
             timeout=10,
         )
@@ -558,11 +513,6 @@ def _near_spread_level(spread: float, level: float, pair: dict, pct: float) -> b
 
 
 def classify_range_zone(pair: dict, result: dict):
-    """MID: |z| >= mid_z.
-
-    FULL: |z| >= full_z và (gần mốc full/min/max ~3% HOẶC đã vượt mốc cùng phía).
-    Vượt mốc: spread <= min(full_lo, range_min) hoặc spread >= max(full_hi, range_max).
-    """
     mid_z = float(pair.get("mid_z", pair.get("threshold", 1.3)))
     full_z = float(pair.get("full_z", 2.0))
     pct = float(pair.get("full_near_pct", 0.03))
@@ -712,10 +662,6 @@ def check_telegram_secret() -> bool:
     return request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") == TELEGRAM_WEBHOOK_SECRET
 
 
-# =============================================================================
-# ROUTE 1: /api — cron gửi Telegram mỗi lần quét
-# =============================================================================
-
 @app.route("/", methods=["GET", "POST"])
 @app.route("/api", methods=["GET", "POST"])
 @app.route("/api/", methods=["GET", "POST"])
@@ -752,10 +698,6 @@ def scan_bot():
     status_code = 200 if not errors or results else 500
     return jsonify({"results": results, "errors": errors, "hidden": hidden}), status_code
 
-
-# =============================================================================
-# ROUTE 2: /api/webhook
-# =============================================================================
 
 @app.route("/api/webhook", methods=["GET", "POST"])
 @app.route("/webhook", methods=["GET", "POST"])
