@@ -858,7 +858,7 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
-        hide_txt = ("\nẨn: " + ", ".join(f"`{i}`" for i in hidden)) if hidden else ""
+        hide_txt = ("\n\n\n Đang ẩn: " + ", ".join(f"`{i}`" for i in hidden)) if hidden else ""
         stamp = f"\nParams chốt 08:00 ICT {slot_key or 'default'}" + (" — vừa tính lại" if refreshed else "")
         send_telegram_message(
             "*[SCAN]*\n\n"
