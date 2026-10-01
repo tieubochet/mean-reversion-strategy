@@ -13,7 +13,8 @@ thật /api hay /api/webhook nhờ vercel.json rewrites).
                                /check            -> trạng thái TẤT CẢ cặp
                                /check <pair_id>  -> trạng thái 1 cặp cụ thể
                                /entry            -> gợi ý vào lệnh
-                               (pair_id: "cl" / "xyz100" / "goldsilver" / "eurgbp")
+                               /on <ids>         -> chỉ cron + /check báo các cặp này
+                               (pair_id: "cl" / "xyz100" / "goldsilver" / "eurgbp" / "btceth" / "ethsol")
 
 CẶP ĐANG THEO DÕI:
     1. cl         — xyz:CL vs xyz:BRENTOIL        — spread = price_A - price_B ($/bbl)
@@ -28,6 +29,12 @@ CẶP ĐANG THEO DÕI:
     4. eurgbp     — xyz:EUR vs xyz:GBP            — spread = ln(price_A / price_B)
                     mean=-0.154973 std=0.003601 mid_z=1.75 full_z=2.5
                     range [-0.1663, -0.1414] | hold 145h / full 221h
+    5. btceth     — BTC vs ETH                    — spread = ln(price_A / price_B)
+                    mean=3.500876 std=0.049548 mid_z=1.5 full_z=2.1
+                    range [3.4053, 3.6211] | hold 1077h / full 1200h (1H 90d)
+    6. ethsol     — ETH vs SOL                    — spread = ln(price_A / price_B)
+                    mean=3.186650 std=0.054535 mid_z=1.5 full_z=2.5
+                    range [2.9965, 3.2923] | hold 195h / full 317h (1H 90d)
 
 Không tính funding. Net PnL = expected PnL về mean − phí round-trip.
 
@@ -37,7 +44,7 @@ QUAN TRỌNG VỀ VERCEL ROUTING: xem vercel.json — bắt buộc có "rewrites
 ENV VARS (Project Settings -> Environment Variables trên Vercel):
     Chung: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CRON_SECRET,
            TELEGRAM_WEBHOOK_SECRET, FEE_BPS_PER_FILL, FILLS_PER_ROUND
-    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER, _EURGBP):
+    Theo từng cặp (suffix _CL, _XYZ100, _GOLDSILVER, _EURGBP, _BTCETH, _ETHSOL):
            SPREAD_MEAN_<X>, SPREAD_STD_<X>, SIGNAL_THRESHOLD_<X>,
            MID_Z_<X>, FULL_Z_<X>, FULL_NEAR_PCT_<X>,
            RANGE_MIN_<X>, RANGE_MAX_<X>, EXIT_Z_THRESHOLD_<X>,
@@ -46,6 +53,7 @@ ENV VARS (Project Settings -> Environment Variables trên Vercel):
 """
 
 import os
+import json
 import math
 import time
 import requests
@@ -76,6 +84,8 @@ TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 
 FEE_BPS_PER_FILL = float(os.environ.get("FEE_BPS_PER_FILL", "2.2"))
 FILLS_PER_ROUND = int(os.environ.get("FILLS_PER_ROUND", "4"))
+NOTIFY_STATE_PATH = os.environ.get("NOTIFY_STATE_PATH", "/tmp/pairs_notify.json")
+_NOTIFY_CACHE = {"ids": None}
 
 
 # =============================================================================
@@ -167,10 +177,168 @@ PAIRS = [
         "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "EURGBP", "221")),
         "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "EURGBP", "5000")),
     },
+    {
+        "id": "btceth",
+        "label": "BTC/ETH",
+        "venue": "hyperliquid",
+        "symbol_a": "BTC",
+        "symbol_b": "ETH",
+        "spread_type": "logratio",
+        "mean": float(_pair_env("SPREAD_MEAN", "BTCETH", "3.500876")),
+        "std": float(_pair_env("SPREAD_STD", "BTCETH", "0.049548")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "BTCETH", "1.5")),
+        "mid_z": float(_pair_env("MID_Z", "BTCETH", "1.5")),
+        "full_z": float(_pair_env("FULL_Z", "BTCETH", "2.1")),
+        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "BTCETH", "0.03")),
+        "range_min": float(_pair_env("RANGE_MIN", "BTCETH", "3.4053")),
+        "range_max": float(_pair_env("RANGE_MAX", "BTCETH", "3.6211")),
+        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "BTCETH", "0.0")),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "BTCETH", str(1077.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "BTCETH", "1200")),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "BTCETH", "5000")),
+    },
+    {
+        "id": "ethsol",
+        "label": "ETH/SOL",
+        "venue": "hyperliquid",
+        "symbol_a": "ETH",
+        "symbol_b": "SOL",
+        "spread_type": "logratio",
+        "mean": float(_pair_env("SPREAD_MEAN", "ETHSOL", "3.186650")),
+        "std": float(_pair_env("SPREAD_STD", "ETHSOL", "0.054535")),
+        "threshold": float(_pair_env("SIGNAL_THRESHOLD", "ETHSOL", "1.5")),
+        "mid_z": float(_pair_env("MID_Z", "ETHSOL", "1.5")),
+        "full_z": float(_pair_env("FULL_Z", "ETHSOL", "2.5")),
+        "full_near_pct": float(_pair_env("FULL_NEAR_PCT", "ETHSOL", "0.03")),
+        "range_min": float(_pair_env("RANGE_MIN", "ETHSOL", "2.9965")),
+        "range_max": float(_pair_env("RANGE_MAX", "ETHSOL", "3.2923")),
+        "exit_z": float(_pair_env("EXIT_Z_THRESHOLD", "ETHSOL", "0.0")),
+        "expected_hold_days": float(_pair_env("EXPECTED_HOLD_DAYS", "ETHSOL", str(195.0 / 24))),
+        "full_hold_hours": float(_pair_env("FULL_HOLD_HOURS", "ETHSOL", "317")),
+        "capital_per_leg": float(_pair_env("CAPITAL_PER_LEG", "ETHSOL", "5000")),
+    },
     # xau tạm tắt
 ]
 
 PAIRS_BY_ID = {p["id"]: p for p in PAIRS}
+
+
+def _parse_pair_ids(raw: str):
+    tokens = [t.strip().lower() for t in raw.replace(",", " ").split() if t.strip()]
+    if not tokens or tokens == ["all"] or tokens == ["*"]:
+        return [p["id"] for p in PAIRS], []
+    unknown = [t for t in tokens if t not in PAIRS_BY_ID]
+    ordered = [p["id"] for p in PAIRS if p["id"] in tokens]
+    return ordered, unknown
+
+
+def _read_notify_file():
+    try:
+        with open(NOTIFY_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ids = data.get("ids")
+        if ids == "*":
+            return [p["id"] for p in PAIRS]
+        if isinstance(ids, list):
+            return [p["id"] for p in PAIRS if p["id"] in ids]
+    except Exception:
+        return None
+    return None
+
+
+def _write_notify_file(ids):
+    payload = {"ids": "*" if ids is None or set(ids) == {p["id"] for p in PAIRS} else list(ids)}
+    try:
+        with open(NOTIFY_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        print(f"[WARN] notify state file: {e}")
+
+
+def _read_notify_pin():
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return None
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChat",
+            json={"chat_id": TELEGRAM_CHAT_ID},
+            timeout=8,
+        )
+        pin = ((resp.json() or {}).get("result") or {}).get("pinned_message") or {}
+        text = pin.get("text") or ""
+        if not text.startswith("NOTIFY_ON:"):
+            return None
+        body = text.split(":", 1)[1].strip()
+        if body in ("*", "all"):
+            return [p["id"] for p in PAIRS]
+        return [p["id"] for p in PAIRS if p["id"] in {t.strip() for t in body.split(",")}]
+    except Exception as e:
+        print(f"[WARN] notify pin: {e}")
+        return None
+
+
+def _pin_notify_state(ids):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    body = "*" if set(ids) == {p["id"] for p in PAIRS} else ",".join(ids)
+    text = f"NOTIFY_ON:{body}"
+    try:
+        sent = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_notification": True},
+            timeout=8,
+        ).json()
+        mid = ((sent or {}).get("result") or {}).get("message_id")
+        if not mid:
+            return False
+        pinned = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/pinChatMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "message_id": mid, "disable_notification": True},
+            timeout=8,
+        ).json()
+        return bool((pinned or {}).get("ok"))
+    except Exception as e:
+        print(f"[WARN] pin notify: {e}")
+        return False
+
+
+def enabled_pair_ids(refresh=False):
+    if not refresh and _NOTIFY_CACHE["ids"] is not None:
+        return _NOTIFY_CACHE["ids"]
+    ids = _read_notify_pin()
+    if ids is None:
+        ids = _read_notify_file()
+    if ids is None:
+        raw = os.environ.get("ENABLED_PAIRS", "").strip()
+        ids = _parse_pair_ids(raw)[0] if raw else [p["id"] for p in PAIRS]
+    else:
+        _write_notify_file(ids)
+    _NOTIFY_CACHE["ids"] = ids
+    return ids
+
+
+def active_pairs(refresh=False):
+    allow = set(enabled_pair_ids(refresh=refresh))
+    return [p for p in PAIRS if p["id"] in allow]
+
+
+def set_enabled_pairs(ids):
+    _NOTIFY_CACHE["ids"] = list(ids)
+    _write_notify_file(ids)
+    return _pin_notify_state(ids)
+
+
+def notify_status_text():
+    on = enabled_pair_ids()
+    off = [p["id"] for p in PAIRS if p["id"] not in set(on)]
+    lines = ["*THÔNG BÁO CẶP*", "Đang bật: " + ", ".join(f"`{i}`" for i in on)]
+    if off:
+        lines.append("Đang ẩn: " + ", ".join(f"`{i}`" for i in off))
+    else:
+        lines.append("Đang ẩn: không")
+    lines.append("Đặt lại: `/on cl, xyz100, goldsilver, eurgbp`")
+    lines.append("Bật hết: `/on all`")
+    return "\n".join(lines)
 
 
 def fee_per_round(pair: dict) -> float:
@@ -182,19 +350,26 @@ def fee_per_round(pair: dict) -> float:
 # =============================================================================
 
 def fetch_xyz_mids() -> dict:
-    """Mark price mọi coin dex xyz — GBP thanh khoản thấp vẫn có mid khi không có nến."""
+    """Mark price dex chính (BTC/ETH/SOL) + dex xyz. Cache 8s."""
     now = time.time()
     cached = _HL_MIDS_CACHE["mids"]
     if cached is not None and (now - _HL_MIDS_CACHE["ts"]) < _HL_MIDS_TTL_S:
         return cached
-    resp = requests.post(HL_INFO_URL, json={"type": "allMids", "dex": "xyz"}, timeout=8)
-    resp.raise_for_status()
-    mids = resp.json() or {}
-    if not isinstance(mids, dict) or not mids:
-        raise RuntimeError("Hyperliquid allMids dex=xyz empty")
+    merged = {}
+    for payload in ({"type": "allMids"}, {"type": "allMids", "dex": "xyz"}):
+        try:
+            resp = requests.post(HL_INFO_URL, json=payload, timeout=8)
+            resp.raise_for_status()
+            mids = resp.json() or {}
+            if isinstance(mids, dict):
+                merged.update(mids)
+        except Exception as e:
+            print(f"[WARN] allMids {payload} failed ({e})")
+    if not merged:
+        raise RuntimeError("Hyperliquid allMids empty")
     _HL_MIDS_CACHE["ts"] = now
-    _HL_MIDS_CACHE["mids"] = mids
-    return mids
+    _HL_MIDS_CACHE["mids"] = merged
+    return merged
 
 
 def fetch_mid_price(coin: str) -> float:
@@ -456,15 +631,19 @@ def build_check_message(pair: dict, result: dict) -> str:
 
 HELP_TEXT = (
     "*PAIRS BOT — MULTI-PAIR*\n"
-    "Đang theo dõi 4 cặp:\n"
-    "• `cl` — CL/BRENT (WTI vs Brent) — Hyperliquid\n"
+    "Đang theo dõi 6 cặp:\n"
+    "• `cl` — CL/BRENT (WTI vs Brent) — Hyperliquid HIP-3\n"
     "• `xyz100` — XYZ100/SP500\n"
     "• `goldsilver` — GOLD/SILVER\n"
-    "• `eurgbp` — EUR/GBP (`xyz:EUR` vs `xyz:GBP`)\n\n"
-    "Gõ /check để xem trạng thái TẤT CẢ cặp ngay lúc này.\n"
-    "Gõ /check cl, /check xyz100, /check goldsilver hoặc /check eurgbp để xem riêng 1 cặp.\n"
+    "• `eurgbp` — EUR/GBP (`xyz:EUR` vs `xyz:GBP`)\n"
+    "• `btceth` — BTC/ETH (perp chính)\n"
+    "• `ethsol` — ETH/SOL (perp chính)\n\n"
+    "Gõ /check để xem các cặp đang bật.\n"
+    "Gõ /check cl, xyz100, goldsilver, eurgbp, btceth hoặc ethsol để xem riêng 1 cặp.\n"
+    "Gõ /on cl, xyz100, goldsilver, eurgbp để chỉ báo những cặp đó, ẩn phần còn lại.\n"
+    "Gõ /on all để bật lại hết. Gõ /on để xem đang bật/ẩn.\n"
     "Gõ /entry để xem gợi ý vào lệnh.\n"
-    "Cron gửi trạng thái tất cả cặp mỗi lần quét, không cần đủ ngưỡng."
+    "Cron chỉ gửi các cặp đang bật, không cần đủ ngưỡng."
 )
 
 PAIRS_TEXT = (
@@ -488,7 +667,17 @@ PAIRS_TEXT = (
     "🔴 SHORT EUR / LONG GBP khi Net PnL >= 35 \n\n"
     "Chia vốn thành 4-5 phần, cứ ~20-30 pip chéo dca 2k/leg\n"
     "Lưu ý: Net PnL dao động từ *15 đến 65* (spread rất chặt). Chỉ vào khi Net >= 35 "
-    "(~z 2.0). GBP HIP-3 thanh khoản mỏng hơn EUR — canh slippage.\n\n\n"
+    "(~z 2.0). GBP HIP-3 thanh khoản mỏng hơn EUR — canh slippage.\n"
+    "--------------------------------\n"
+    "🟢 LONG BTC / SHORT ETH khi Net PnL >= 250 \n"
+    "🔴 SHORT BTC / LONG ETH khi Net PnL >= 250 \n\n"
+    "Chia vốn thành 4-5 phần, dca 2k/leg\n"
+    "Lưu ý: Net mid ~370 / full ~520 (1H 90d). Band *150–600*. Hold TB dài (~1077h).\n"
+    "--------------------------------\n"
+    "🟢 LONG ETH / SHORT SOL khi Net PnL >= 280 \n"
+    "🔴 SHORT ETH / LONG SOL khi Net PnL >= 280 \n\n"
+    "Chia vốn thành 4-5 phần, dca 2k/leg\n"
+    "Lưu ý: Net mid ~409 / full ~682 (1H 90d). Band *150–700*. Hold TB ~195h.\n\n\n"
     "*Giải thích*:\n"
     "2k/leg: 2k long và 2k short\n"
     "Net PnL: Lợi nhuận ròng đang tính với vol 5k/leg (không gồm funding)\n\n\n"
@@ -538,7 +727,9 @@ def scan_bot():
     results = {}
     errors = {}
     sections = []
-    for pair in PAIRS:
+    shown = active_pairs(refresh=True)
+    hidden = [p["id"] for p in PAIRS if p["id"] not in {x["id"] for x in shown}]
+    for pair in shown:
         try:
             result = evaluate_signal(pair)
             results[pair["id"]] = result_to_json(result)
@@ -549,15 +740,17 @@ def scan_bot():
             sections.append(f"*{pair['label']}*\n❌ Lỗi: `{e}`")
 
     if sections:
+        hide_txt = ("\nẨn: " + ", ".join(f"`{i}`" for i in hidden)) if hidden else ""
         send_telegram_message(
             "*[SCAN]*\n\n"
             + "\n\n".join(sections)
+            + hide_txt
             + "\n\n\nGõ /check để xem giá hiện tại"
             + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
         )
 
     status_code = 200 if not errors or results else 500
-    return jsonify({"results": results, "errors": errors}), status_code
+    return jsonify({"results": results, "errors": errors, "hidden": hidden}), status_code
 
 
 # =============================================================================
@@ -584,15 +777,33 @@ def telegram_webhook():
     if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
         return jsonify({"ok": True}), 200
 
-    parts = text.split()
+    parts = text.split(maxsplit=1)
     command = parts[0].split("@")[0].lower() if parts else ""
-    arg = parts[1].lower() if len(parts) > 1 else None
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    arg = rest.split()[0].lower().rstrip(",") if rest else None
 
     try:
         if command in ("/start", "/help"):
             send_telegram_message(HELP_TEXT, chat_id=chat_id)
         elif command == "/entry":
             send_telegram_message(PAIRS_TEXT, chat_id=chat_id)
+        elif command == "/on":
+            if not rest:
+                send_telegram_message(notify_status_text(), chat_id=chat_id)
+            else:
+                ids, unknown = _parse_pair_ids(rest)
+                if unknown:
+                    send_telegram_message(
+                        "Không nhận: " + ", ".join(f"`{u}`" for u in unknown)
+                        + "\nHợp lệ: " + ", ".join(f"`{p['id']}`" for p in PAIRS),
+                        chat_id=chat_id,
+                    )
+                elif not ids:
+                    send_telegram_message("Danh sách trống. Ví dụ: `/on cl, xyz100`", chat_id=chat_id)
+                else:
+                    pinned = set_enabled_pairs(ids)
+                    note = "" if pinned else "\n\nKhông ghim được tin trạng thái — cron instance mới có thể chưa thấy cho tới khi warm."
+                    send_telegram_message(notify_status_text() + note, chat_id=chat_id)
         elif command == "/check":
             if arg and arg in PAIRS_BY_ID:
                 pair = PAIRS_BY_ID[arg]
@@ -607,19 +818,24 @@ def telegram_webhook():
                 )
             else:
                 sections = []
-                for pair in PAIRS:
+                for pair in active_pairs():
                     result = evaluate_signal(pair)
                     sections.append(build_check_message(pair, result))
+                hidden = [p["id"] for p in PAIRS if p["id"] not in {x["id"] for x in active_pairs()}]
+                tail = ""
+                if hidden:
+                    tail = "\nẨn: " + ", ".join(f"`{i}`" for i in hidden) + ". `/on all` để hiện lại."
                 msg = (
                     "*[CHECK] PAIRS STATUS*\n\n"
                     + "\n\n".join(sections)
+                    + tail
                     + "\n\n\nGõ /check để xem giá hiện tại"
                     + "\n\n\n[Click xem dữ liệu real-time!](https://spread-desk-realtime.vercel.app/)"
                 )
                 send_telegram_message(msg, chat_id=chat_id)
         elif command:
             send_telegram_message(
-                "Lệnh không hợp lệ. Gõ /check, /check <pair_id> hoặc /entry.",
+                "Lệnh không hợp lệ. Gõ /on, /check, /check <pair_id> hoặc /entry.",
                 chat_id=chat_id,
             )
     except Exception as e:
